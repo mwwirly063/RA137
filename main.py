@@ -4,6 +4,7 @@ from utils.logger import log
 from utils.database import init_db
 from modules.subdomain_enum import collect_subdomains
 from modules.ip_extractor import collect_ips
+from utils.paths import create_target_output
 
 TARGETS_FILE = Path("targets.txt")
 
@@ -39,21 +40,26 @@ def main():
 
     log(f"{len(targets)} targets loaded")
 
+
     for target in targets:
 
         log(f"Processing target: {target}")
 
+        target_output = create_target_output(target)
+
         collect_subdomains(
             domain=target,
-            wordlist_path="wordlists/subdomains.txt"
+            wordlist_path="wordlists/subdomains.txt",
+            output_dir=target_output
         )
 
-        collect_ips()
-        
+        collect_ips(output_dir=target_output)
+
+        filter_non_cdn_ips(output_dir=target_output)
+
         log(f"Finished target: {target}")
 
-    log("All targets completed")
-
+    log("All targets completed")    
 
 if __name__ == "__main__":
     main()
