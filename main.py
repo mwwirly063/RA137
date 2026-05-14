@@ -3,7 +3,7 @@ from pathlib import Path
 from utils.logger import log
 from utils.database import init_db
 from modules.subdomain_enum import collect_subdomains
-
+from modules.ip_extractor import collect_ips
 
 TARGETS_FILE = Path("targets.txt")
 
@@ -48,6 +48,8 @@ def main():
             wordlist_path="wordlists/subdomains.txt"
         )
 
+        collect_ips()
+        
         log(f"Finished target: {target}")
 
     log("All targets completed")
