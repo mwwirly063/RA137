@@ -5,6 +5,7 @@ from utils.database import init_db
 from modules.subdomain_enum import collect_subdomains
 from modules.ip_extractor import collect_ips
 from utils.paths import create_target_output
+from modules.cert_discovery import cert_discovery
 
 TARGETS_FILE = Path("targets.txt")
 
@@ -56,6 +57,11 @@ def main():
         collect_ips(output_dir=target_output)
 
         filter_non_cdn_ips(output_dir=target_output)
+
+        cert_discovery(
+            target=target,
+            output_dir=target_output
+        )
 
         log(f"Finished target: {target}")
 
