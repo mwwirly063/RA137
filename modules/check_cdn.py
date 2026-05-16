@@ -4,10 +4,8 @@ import ipaddress
 from utils.logger import log
 
 
-OUTPUT_DIR = Path("outputs")
-
-PURE_IP_FILE = OUTPUT_DIR / "pure_ip.txt"
-FINAL_IP_FILE = OUTPUT_DIR / "ip.txt"
+PURE_IP_FILE = output_dir / "pure_ip.txt"
+FINAL_IP_FILE = output_dir / "ip.txt"
 
 CDN_FILE = Path("wordlists/all_cdn.txt")
 
