@@ -5,7 +5,7 @@ from pathlib import Path
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-LOG_FILE = OUTPUT_DIR / "recon.log"
+LOG_FILE = Path("outputs") / "recon.log"
 
 
 def log(message):
