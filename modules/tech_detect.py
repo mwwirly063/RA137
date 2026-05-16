@@ -43,7 +43,7 @@ def run_httpx(subdomain_file, output_file):
     log("Running tech detection with httpx")
 
     cmd = (
-        f"httpx "
+        f"httpxx "
         f"-l {subdomain_file} "
         f"-ports {PORTS} "
         f"-title "
