@@ -4,15 +4,6 @@ from pathlib import Path
 from utils.command import run_command
 from utils.logger import log
 
-
-SUBDOMAIN_FILE = output_dir / "subdomains.txt"
-
-DNSX_FILE = output_dir / "dns1.txt"
-HTTPX_FILE = output_dir / "dns2.txt"
-
-PURE_IP_FILE = output_dir / "pure_ip.txt"
-
-
 IP_REGEX = r"(?:\d{1,3}\.){3}\d{1,3}"
 
 
@@ -80,6 +71,13 @@ def extract_ips():
 
 
 def collect_ips(output_dir):
+
+    SUBDOMAIN_FILE = output_dir / "subdomains.txt"
+
+    DNSX_FILE = output_dir / "dns1.txt"
+    HTTPX_FILE = output_dir / "dns2.txt"
+
+    PURE_IP_FILE = output_dir / "pure_ip.txt"
 
     log("Starting IP collection")
 
