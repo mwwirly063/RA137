@@ -8,7 +8,7 @@ from utils.ai_report import generate_ai_report
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-SUBDOMAIN_FILE = OUTPUT_DIR / "subdomains.txt"
+SUBDOMAIN_FILE = output_dir / "subdomains.txt"
 
 
 def run_subfinder(domain: str):
@@ -83,7 +83,7 @@ def save_subdomains(subdomains: set):
     log(f"Saved {len(unique_subdomains)} unique subdomains")
 
 
-def collect_subdomains(domain: str, wordlist_path: str):
+def collect_subdomains(domain: str, wordlist_path: str, output_dir):
 
     log("Starting subdomain collection")
 
