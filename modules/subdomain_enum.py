@@ -5,8 +5,8 @@ from utils.logger import log
 from utils.ai_report import generate_ai_report
 
 
-OUTPUT_DIR = Path("outputs")
-OUTPUT_DIR.mkdir(exist_ok=True)
+# OUTPUT_DIR = Path("outputs")
+# OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 def run_subfinder(domain: str, output_dir):
