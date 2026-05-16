@@ -11,13 +11,13 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 SUBDOMAIN_FILE = output_dir / "subdomains.txt"
 
 
-def run_subfinder(domain: str):
+def run_subfinder(domain: str, output_dir):
 
     log(f"Running subfinder on {domain}")
 
     cmd = f"subfinder -silent -d {domain}"
 
-    temp_file = OUTPUT_DIR / "subfinder.txt"
+    temp_file = temp_file = output_dir / "subfinder.txt"
 
     run_command(cmd, output_file=temp_file)
 
@@ -36,7 +36,7 @@ def run_subfinder(domain: str):
     return subdomains
 
 
-def run_gobuster(domain: str, wordlist_path: str):
+def run_gobuster(domain: str, wordlist_path: str, output_dir):
 
     log(f"Running gobuster on {domain}")
 
@@ -47,7 +47,7 @@ def run_gobuster(domain: str, wordlist_path: str):
         f"--quiet"
     )
 
-    temp_file = OUTPUT_DIR / "gobuster.txt"
+    temp_file = output_dir / "gobuster.txt"
 
     run_command(cmd, output_file=temp_file)
 
@@ -72,10 +72,10 @@ def run_gobuster(domain: str, wordlist_path: str):
     return subdomains
 
 
-def save_subdomains(subdomains: set):
+def save_subdomains((subdomains: set, output_dir):
 
     unique_subdomains = sorted(set(subdomains))
-
+    subdomain_file = output_dir / "subdomains.txt"
     with open(SUBDOMAIN_FILE, "w") as f:
         for sub in unique_subdomains:
             f.write(sub + "\n")
@@ -89,13 +89,13 @@ def collect_subdomains(domain: str, wordlist_path: str, output_dir):
 
     all_subdomains = set()
 
-    subfinder_results = run_subfinder(domain)
+    subfinder_results = run_subfinder(domain, output_dir)
     all_subdomains.update(subfinder_results)
 
-    gobuster_results = run_gobuster(domain, wordlist_path)
+    gobuster_results = run_gobuster(domain,wordlist_path,output_dir)
     all_subdomains.update(gobuster_results)
 
-    save_subdomains(all_subdomains)
+    save_subdomains(all_subdomains, output_dir)
 
     report_data = "\n".join(sorted(all_subdomains))
 
