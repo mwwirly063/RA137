@@ -6,7 +6,7 @@ from modules.subdomain_enum import collect_subdomains
 from modules.ip_extractor import collect_ips
 from utils.paths import create_target_output
 from modules.cert_discovery import cert_discovery
-from modules.cdn_filter import filter_non_cdn_ips
+from modules.check_cdn import filter_non_cdn_ips
 
 TARGETS_FILE = Path("targets.txt")
 
