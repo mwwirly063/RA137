@@ -29,7 +29,7 @@ def run_httpx(subdomain_file, httpx_file):
     log("Running httpx")
 
     cmd = (
-        f"httpx "
+        f"httpxx "
         f"-l {subdomain_file} "
         f"-ip "
         f"-silent "
