@@ -8,8 +8,6 @@ from utils.ai_report import generate_ai_report
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-SUBDOMAIN_FILE = output_dir / "subdomains.txt"
-
 
 def run_subfinder(domain: str, output_dir):
 
