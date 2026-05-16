@@ -5,15 +5,14 @@ from utils.command import run_command
 from utils.logger import log
 
 
-OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-SUBDOMAIN_FILE = OUTPUT_DIR / "subdomains.txt"
+SUBDOMAIN_FILE = output_dir / "subdomains.txt"
 
-DNSX_FILE = OUTPUT_DIR / "dns1.txt"
-HTTPX_FILE = OUTPUT_DIR / "dns2.txt"
+DNSX_FILE = output_dir / "dns1.txt"
+HTTPX_FILE = output_dir / "dns2.txt"
 
-PURE_IP_FILE = OUTPUT_DIR / "pure_ip.txt"
+PURE_IP_FILE = output_dir / "pure_ip.txt"
 
 
 IP_REGEX = r"(?:\d{1,3}\.){3}\d{1,3}"
@@ -82,7 +81,7 @@ def extract_ips():
     log(f"Saved {len(all_ips)} unique IPs")
 
 
-def collect_ips():
+def collect_ips(output_dir):
 
     log("Starting IP collection")
 
