@@ -4,15 +4,10 @@ import ipaddress
 from utils.logger import log
 
 
-PURE_IP_FILE = output_dir / "pure_ip.txt"
-FINAL_IP_FILE = output_dir / "ip.txt"
-
 CDN_FILE = Path("wordlists/all_cdn.txt")
 
 
 def load_cdn_ranges():
-
-    log("Loading CDN ranges")
 
     cidrs = []
 
@@ -34,8 +29,6 @@ def load_cdn_ranges():
             except Exception:
                 continue
 
-    log(f"Loaded {len(cidrs)} CDN ranges")
-
     return cidrs
 
 
@@ -45,9 +38,8 @@ def is_cdn_ip(ip, cidrs):
 
         ip_obj = ipaddress.ip_address(ip)
 
-        for network in cidrs:
-
-            if ip_obj in network:
+        for net in cidrs:
+            if ip_obj in net:
                 return True
 
         return False
@@ -56,11 +48,14 @@ def is_cdn_ip(ip, cidrs):
         return False
 
 
-def filter_non_cdn_ips():
+def filter_non_cdn_ips(output_dir):
 
     log("Filtering CDN IPs")
 
-    if not PURE_IP_FILE.exists():
+    pure_ip_file = output_dir / "pure_ip.txt"
+    final_ip_file = output_dir / "ip.txt"
+
+    if not pure_ip_file.exists():
         log("pure_ip.txt not found")
         return
 
@@ -68,7 +63,7 @@ def filter_non_cdn_ips():
 
     clean_ips = set()
 
-    with open(PURE_IP_FILE, "r") as f:
+    with open(pure_ip_file, "r") as f:
 
         for line in f:
 
@@ -80,7 +75,7 @@ def filter_non_cdn_ips():
             if not is_cdn_ip(ip, cidrs):
                 clean_ips.add(ip)
 
-    with open(FINAL_IP_FILE, "w") as f:
+    with open(final_ip_file, "w") as f:
 
         for ip in sorted(clean_ips):
             f.write(ip + "\n")
