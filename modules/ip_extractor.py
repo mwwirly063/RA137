@@ -5,8 +5,6 @@ from utils.command import run_command
 from utils.logger import log
 
 
-OUTPUT_DIR.mkdir(exist_ok=True)
-
 SUBDOMAIN_FILE = output_dir / "subdomains.txt"
 
 DNSX_FILE = output_dir / "dns1.txt"
