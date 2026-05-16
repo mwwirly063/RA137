@@ -72,7 +72,7 @@ def run_gobuster(domain: str, wordlist_path: str, output_dir):
     return subdomains
 
 
-def save_subdomains((subdomains: set, output_dir):
+def save_subdomains(subdomains: set, output_dir):
 
     unique_subdomains = sorted(set(subdomains))
     subdomain_file = output_dir / "subdomains.txt"
