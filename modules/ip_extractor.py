@@ -1,22 +1,22 @@
 import re
-from pathlib import Path
 
 from utils.command import run_command
 from utils.logger import log
 
+
 IP_REGEX = r"(?:\d{1,3}\.){3}\d{1,3}"
 
 
-def run_dnsx():
+def run_dnsx(subdomain_file, dnsx_file):
 
     log("Running dnsx")
 
     cmd = (
         f"dnsx "
-        f"-l {SUBDOMAIN_FILE} "
+        f"-l {subdomain_file} "
         f"-resp "
         f"-silent "
-        f"-o {DNSX_FILE}"
+        f"-o {dnsx_file}"
     )
 
     run_command(cmd)
@@ -24,16 +24,16 @@ def run_dnsx():
     log("dnsx completed")
 
 
-def run_httpx():
+def run_httpx(subdomain_file, httpx_file):
 
     log("Running httpx")
 
     cmd = (
         f"httpx "
-        f"-l {SUBDOMAIN_FILE} "
+        f"-l {subdomain_file} "
         f"-ip "
         f"-silent "
-        f"-o {HTTPX_FILE}"
+        f"-o {httpx_file}"
     )
 
     run_command(cmd)
@@ -41,13 +41,13 @@ def run_httpx():
     log("httpx completed")
 
 
-def extract_ips():
+def extract_ips(dnsx_file, httpx_file, pure_ip_file):
 
     log("Extracting IP addresses")
 
     all_ips = set()
 
-    files = [DNSX_FILE, HTTPX_FILE]
+    files = [dnsx_file, httpx_file]
 
     for file_path in files:
 
@@ -63,7 +63,8 @@ def extract_ips():
             for ip in matches:
                 all_ips.add(ip)
 
-    with open(PURE_IP_FILE, "w") as f:
+    with open(pure_ip_file, "w") as f:
+
         for ip in sorted(all_ips):
             f.write(ip + "\n")
 
@@ -72,19 +73,24 @@ def extract_ips():
 
 def collect_ips(output_dir):
 
-    SUBDOMAIN_FILE = output_dir / "subdomains.txt"
+    subdomain_file = output_dir / "subdomains.txt"
 
-    DNSX_FILE = output_dir / "dns1.txt"
-    HTTPX_FILE = output_dir / "dns2.txt"
+    dnsx_file = output_dir / "dns1.txt"
 
-    PURE_IP_FILE = output_dir / "pure_ip.txt"
+    httpx_file = output_dir / "dns2.txt"
+
+    pure_ip_file = output_dir / "pure_ip.txt"
 
     log("Starting IP collection")
 
-    run_dnsx()
+    run_dnsx(subdomain_file, dnsx_file)
 
-    run_httpx()
+    run_httpx(subdomain_file, httpx_file)
 
-    extract_ips()
+    extract_ips(
+        dnsx_file,
+        httpx_file,
+        pure_ip_file
+    )
 
     log("IP collection completed")
