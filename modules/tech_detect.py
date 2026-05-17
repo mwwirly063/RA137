@@ -121,7 +121,7 @@ def run_gow(ip_file, output_dir):
 
 
      cmd = (
-        f"cd {output_dir} && "
+        f"cd "{output_dir}" && "
         f"gow scan file "
         f"-f ip.txt "
         f"--screenshot-fullpage"
