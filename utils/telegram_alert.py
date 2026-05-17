@@ -4,8 +4,8 @@ import requests
 from utils.logger import log
 
 
-TELEGRAM_BOT_TOKEN = ""
-TELEGRAM_CHAT_ID = ""
+TELEGRAM_BOT_TOKEN = "8661600276:AAEKf9f160uDfR4foZMjJfnrUUvKcGCZ7Z8"
+TELEGRAM_CHAT_ID = "8288341341"
 
 
 def send_telegram_alert(target, ip, vuln_info):
