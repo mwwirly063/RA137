@@ -62,11 +62,11 @@ COMMON_SHARED_VHOSTS = [
 ]
 
 
-SHODAN_API_KEY = ""
-FOFA_EMAIL = ""
-FOFA_API_KEY = ""
-CENSYS_API_ID = ""
-CENSYS_API_SECRET = ""
+SHODAN_API_KEY = "uqynQfof7hjyMvuq2mRVjA7Sm32UNjP0"
+FOFA_EMAIL = "mwwirly063@caterpillarink.site"
+FOFA_API_KEY = "ffc34816444da92636d40ab4eeb80976"
+CENSYS_API_ID = "i8qWeSyc"
+CENSYS_API_SECRET = "censys_i8qWeSyc_7xwRnG8vixdpEhNopB7zoxvG"
 
 
 def rate_limit():
