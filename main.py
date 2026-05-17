@@ -9,6 +9,7 @@ from modules.cert_discovery import cert_discovery
 from modules.check_cdn import filter_non_cdn_ips
 from modules.tech_detect import tech_detection
 from modules.realip_discovery import real_ip_discovery
+from modules.vuln_check import nuclei_scan
 
 TARGETS_FILE = Path("targets.txt")
 
@@ -69,8 +70,12 @@ def main():
         tech_detection(
             output_dir=target_output
         )
-        
+
         real_ip_discovery(
+            output_dir=target_output
+        )
+
+        nuclei_scan(
             output_dir=target_output
         )
 
