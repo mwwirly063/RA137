@@ -42,7 +42,9 @@ def run_gobuster(domain: str, wordlist_path: str, output_dir):
     cmd = (
         f"gobuster dns "
         f"-do {domain} "
+        f"--resolver 8.8.8.8 "
         f"-w {wordlist_path} "
+        f"-t 50 --delay 1s "
         f"--quiet"
     )
 
