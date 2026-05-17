@@ -119,7 +119,6 @@ def run_gow(ip_file):
 
     log("Running gow screenshot scan")
 
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = (
         f"gow scan file "
