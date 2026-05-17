@@ -34,6 +34,31 @@ def extract_ips_from_file(file_path):
 
         for line in f:
 
+            line = line.strip()
+
+            if not line:
+                continue
+
+
+            # realip.txt JSON support
+            if file_path.name == "realip.txt":
+
+                try:
+
+                    data = json.loads(line)
+
+                    ip = data.get("ip")
+
+                    if ip:
+                        ips.add(ip)
+
+                    continue
+
+                except Exception:
+                    pass
+
+
+            # fallback regex extraction
             found = re.findall(
                 IP_REGEX,
                 line
@@ -95,7 +120,8 @@ def build_targets(ips):
     return sorted(targets)
 
 
-def save_targets(targets, output_dir):
+def save_targets(targets,
+                 output_dir):
 
     input_file = (
         output_dir / "nuclei_targets.txt"
@@ -109,7 +135,8 @@ def save_targets(targets, output_dir):
     return input_file
 
 
-def run_nuclei(input_file, output_dir):
+def run_nuclei(input_file,
+               output_dir):
 
     output_file = (
         output_dir / "nuclei_results.txt"
@@ -166,6 +193,7 @@ def nuclei_scan(output_dir):
     if not ips:
 
         log("No IPs found")
+
         return
 
     log(
