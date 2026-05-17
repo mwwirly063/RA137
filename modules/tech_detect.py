@@ -120,10 +120,11 @@ def run_gow(ip_file):
     log("Running gow screenshot scan")
 
 
-    cmd = (
+     cmd = (
+        f"cd {output_dir} && "
         f"gow scan file "
-        f"-f {ip_file} "
-        f"--screenshot-fullpage "
+        f"-f ip.txt "
+        f"--screenshot-fullpage"
     )
 
     run_command(cmd)
@@ -160,7 +161,8 @@ def tech_detection(output_dir):
     )
 
     run_gow(
-        ip_file
+        ip_file,
+        output_dir
     )
 
     log("Tech detection completed")
