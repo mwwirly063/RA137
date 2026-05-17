@@ -162,7 +162,6 @@ def tech_detection(output_dir):
 
     run_gow(
         ip_file,
-        screenshot_dir
     )
 
     log("Tech detection completed")
