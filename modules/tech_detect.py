@@ -115,7 +115,7 @@ def parse_httpx_results(httpx_file,
     log(f"Other default pages: {len(other_default_results)}")
 
 
-def run_gow(ip_file):
+def run_gow(ip_file, output_dir):
 
     log("Running gow screenshot scan")
 
