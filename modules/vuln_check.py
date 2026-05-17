@@ -6,7 +6,9 @@ from pathlib import Path
 from utils.command import run_command
 from utils.logger import log
 from utils.ai_report import generate_ai_report
-
+from utils.telegram_alert import (
+    send_nuclei_results_to_telegram
+)
 
 IP_REGEX = r"(?:\d{1,3}\.){3}\d{1,3}"
 
@@ -148,6 +150,10 @@ def nuclei_scan(output_dir):
     generate_ai_report(
         module_name="Nuclei Scan",
         data=report_data
+    )
+
+    send_nuclei_results_to_telegram(
+        output_dir
     )
 
     log(
