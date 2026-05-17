@@ -2,7 +2,7 @@ from pathlib import Path
 
 from utils.command import run_command
 from utils.logger import log
-
+from utils.ai_report import generate_ai_report
 
 WAF_KEYWORDS = [
     "cloudflare",
