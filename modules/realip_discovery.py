@@ -8,11 +8,11 @@ import requests
 import socket
 import ssl
 import time
+import jarm
 
 from bs4 import BeautifulSoup
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from jarm.scanner.scanner import Scanner
 from urllib.parse import urljoin
 from utils.ai_report import generate_ai_report
 
@@ -271,12 +271,12 @@ def get_jarm(host, port=443):
 
     try:
 
-        scanner = Scanner(
-            host=host,
-            port=port
+        result = jarm.Scanner.scan(
+            host,
+            port
         )
 
-        return scanner.scan()
+        return result
 
     except Exception:
         return None
