@@ -1,1 +1,10 @@
-google.com
+wam.ae
+gulfnews.com
+khaleejtimes.com
+thenationalnews.com
+albayan.ae
+emaratalyoum.com
+aletihad.ae
+alkhaleej.ae
+gulftoday.ae
+emirates247.com

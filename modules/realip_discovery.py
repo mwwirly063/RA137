@@ -200,31 +200,6 @@ def get_favicon_hash(url):
         return None
 
 
-def get_title(url):
-
-    try:
-
-        rate_limit()
-
-        response = requests.get(
-            url,
-            timeout=10,
-            verify=False
-        )
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-        if soup.title:
-            return soup.title.text.strip()
-
-        return None
-
-    except Exception:
-        return None
-
 
 def get_cert_fingerprint(host, port=443):
 
@@ -551,8 +526,6 @@ def real_ip_discovery(output_dir):
         log(f"Fingerprinting {target}")
 
         favicon_hash = get_favicon_hash(url)
-
-        title = get_title(url)
 
         cert_hash = get_cert_fingerprint(
             target
