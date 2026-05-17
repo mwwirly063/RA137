@@ -5,7 +5,7 @@ from pathlib import Path
 def run_command(
     cmd,
     output_file=None,
-    timeout=300,
+    timeout=10000,
     silent=True
 ):
     """
