@@ -13,9 +13,10 @@ import jarm
 from bs4 import BeautifulSoup
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+from cryptography.x509.oid import NameOID
 from urllib.parse import urljoin
-from utils.ai_report import generate_ai_report
 
+from utils.ai_report import generate_ai_report
 from utils.logger import log
 
 
@@ -28,11 +29,44 @@ IP_REGEX = r"(?:\d{1,3}\.){3}\d{1,3}"
 
 REQUEST_DELAY = (1, 3)
 
-SHODAN_API_KEY = "uqynQfof7hjyMvuq2mRVjA7Sm32UNjP0"
-FOFA_EMAIL = "mwwirly063@caterpillarink.site"
-FOFA_API_KEY = "ffc34816444da92636d40ab4eeb80976"
-CENSYS_API_ID = "i8qWeSyc"
-CENSYS_API_SECRET = "censys_i8qWeSyc_7xwRnG8vixdpEhNopB7zoxvG"
+SSL_PORTS = [
+    443,
+    4443,
+    7443,
+    8443,
+    9443,
+    10443
+]
+
+
+COMMON_SHARED_CERTS = [
+    "cloudflare",
+    "akamai",
+    "fastly",
+    "imperva",
+    "amazon",
+    "amazonaws",
+    "edgekey",
+    "cdn"
+]
+
+
+COMMON_SHARED_VHOSTS = [
+    "outlook",
+    "exchange",
+    "owa",
+    "autodiscover",
+    "cpanel",
+    "plesk",
+    "webmail"
+]
+
+
+SHODAN_API_KEY = ""
+FOFA_EMAIL = ""
+FOFA_API_KEY = ""
+CENSYS_API_ID = ""
+CENSYS_API_SECRET = ""
 
 
 def rate_limit():
@@ -59,7 +93,11 @@ def load_cdn_ranges():
                 continue
 
             try:
-                cidrs.append(ipaddress.ip_network(line))
+
+                cidrs.append(
+                    ipaddress.ip_network(line)
+                )
+
             except Exception:
                 continue
 
@@ -126,9 +164,15 @@ def get_favicon_hash(url):
                 if x else False
             )
 
-            if link_tag and link_tag.get("href"):
+            if (
+                link_tag and
+                link_tag.get("href")
+            ):
 
-                favicon_url = link_tag.get("href")
+                favicon_url = (
+                    link_tag.get("href")
+                )
+
                 break
 
         if not favicon_url:
@@ -142,7 +186,10 @@ def get_favicon_hash(url):
 
             for path in standard_paths:
 
-                test_url = urljoin(url, path)
+                test_url = urljoin(
+                    url,
+                    path
+                )
 
                 try:
 
@@ -155,7 +202,10 @@ def get_favicon_hash(url):
                         verify=False
                     )
 
-                    if test_response.status_code == 200:
+                    if (
+                        test_response.status_code
+                        == 200
+                    ):
 
                         favicon_url = path
                         break
@@ -200,8 +250,10 @@ def get_favicon_hash(url):
         return None
 
 
+def get_ssl_domains(ip,
+                    port=443):
 
-def get_cert_fingerprint(host, port=443):
+    result = set()
 
     try:
 
@@ -214,13 +266,13 @@ def get_cert_fingerprint(host, port=443):
         context.verify_mode = ssl.CERT_NONE
 
         with socket.create_connection(
-            (host, port),
-            timeout=10
+            (ip, port),
+            timeout=5
         ) as sock:
 
             with context.wrap_socket(
                 sock,
-                server_hostname=host
+                server_hostname=None
             ) as ssock:
 
                 der_cert = ssock.getpeercert(
@@ -232,14 +284,107 @@ def get_cert_fingerprint(host, port=443):
             default_backend()
         )
 
-        sha256 = cert.fingerprint(
-            cert.signature_hash_algorithm
-        ).hex()
+        try:
 
-        return sha256
+            cn = cert.subject.get_attributes_for_oid(
+                NameOID.COMMON_NAME
+            )[0].value
+
+            result.add(cn.lower())
+
+        except Exception:
+            pass
+
+        try:
+
+            san_ext = cert.extensions.get_extension_for_class(
+                x509.SubjectAlternativeName
+            )
+
+            sans = san_ext.value.get_values_for_type(
+                x509.DNSName
+            )
+
+            for san in sans:
+
+                result.add(
+                    san.lower()
+                )
+
+        except Exception:
+            pass
 
     except Exception:
-        return None
+        pass
+
+    return result
+
+
+def check_certificate_match(
+        ip,
+        target):
+
+    for port in SSL_PORTS:
+
+        domains = get_ssl_domains(
+            ip,
+            port
+        )
+
+        for domain in domains:
+
+            if (
+                target.lower()
+                in domain
+            ):
+
+                for item in COMMON_SHARED_CERTS:
+
+                    if item in domain:
+                        return False
+
+                return True
+
+    return False
+
+
+def check_vhost_match(
+        ip,
+        target):
+
+    try:
+
+        rate_limit()
+
+        response = requests.get(
+            f"https://{ip}",
+            headers={
+                "Host": target,
+                "User-Agent":
+                "Mozilla/5.0"
+            },
+            verify=False,
+            timeout=8
+        )
+
+        text = response.text.lower()
+
+        if (
+            target.lower()
+            in text
+        ):
+
+            for item in COMMON_SHARED_VHOSTS:
+
+                if item in text:
+                    return False
+
+            return True
+
+    except Exception:
+        pass
+
+    return False
 
 
 def get_jarm(host, port=443):
@@ -383,9 +528,9 @@ def censys_search(query):
     return results
 
 
-def build_queries(favicon_hash,
-                  cert_hash,
-                  jarm):
+def build_queries(
+        favicon_hash,
+        jarm):
 
     queries = []
 
@@ -405,20 +550,6 @@ def build_queries(favicon_hash,
             )
         })
 
-    if cert_hash:
-
-        queries.append({
-            "type": "cert",
-            "shodan": (
-                f"ssl.cert.fingerprint:{cert_hash}"
-            ),
-            "fofa": None,
-            "censys": (
-                "services.tls.certificates."
-                f"leaf_data.fingerprint:{cert_hash}"
-            )
-        })
-
     if jarm:
 
         queries.append({
@@ -435,7 +566,33 @@ def build_queries(favicon_hash,
     return queries
 
 
-def save_results(results, output_file):
+def validate_real_ip(
+        ip,
+        target,
+        favicon_match=False,
+        cert_match=False,
+        vhost_match=False,
+        jarm_match=False):
+
+    score = 0
+
+    if favicon_match:
+        score += 1
+
+    if jarm_match:
+        score += 2
+
+    if vhost_match:
+        score += 4
+
+    if cert_match:
+        score += 5
+
+    return score >= 7, score
+
+
+def save_results(results,
+                 output_file):
 
     with open(output_file, "w") as f:
 
@@ -445,7 +602,9 @@ def save_results(results, output_file):
                 json.dumps(item) + "\n"
             )
 
-    log(f"Saved {len(results)} results")
+    log(
+        f"Saved {len(results)} results"
+    )
 
 
 def real_ip_discovery(output_dir):
@@ -481,6 +640,7 @@ def real_ip_discovery(output_dir):
                 ip and
                 is_cdn_ip(ip, cidrs)
             ):
+
                 cdn_ips.append(ip)
 
     if not cdn_ips:
@@ -504,22 +664,23 @@ def real_ip_discovery(output_dir):
 
     for target in subdomains:
 
+        log(
+            f"Fingerprinting {target}"
+        )
+
         url = f"https://{target}"
 
-        log(f"Fingerprinting {target}")
+        favicon_hash = get_favicon_hash(
+            url
+        )
 
-        favicon_hash = get_favicon_hash(url)
-
-        cert_hash = get_cert_fingerprint(
+        jarm_hash = get_jarm(
             target
         )
 
-        jarm = get_jarm(target)
-
         queries = build_queries(
             favicon_hash,
-            cert_hash,
-            jarm
+            jarm_hash
         )
 
         target_results = set()
@@ -591,18 +752,54 @@ def real_ip_discovery(output_dir):
 
         for ip in target_results:
 
+            cert_match = check_certificate_match(
+                ip,
+                target
+            )
+
+            vhost_match = check_vhost_match(
+                ip,
+                target
+            )
+
+            valid, score = validate_real_ip(
+                ip=ip,
+                target=target,
+                favicon_match=True,
+                cert_match=cert_match,
+                vhost_match=vhost_match,
+                jarm_match=True
+            )
+
+            if not valid:
+                continue
+
             result = {
                 "target": target,
                 "ip": ip,
-                "score": len(matched_by) * 10,
+                "score": score,
+                "cert_match": cert_match,
+                "vhost_match": vhost_match,
                 "matched_by": matched_by
             }
 
-            all_results.append(result)
+            all_results.append(
+                result
+            )
 
     save_results(
         all_results,
         output_file
+    )
+
+    report_data = "\n".join([
+        json.dumps(x)
+        for x in all_results
+    ])
+
+    generate_ai_report(
+        module_name="Real IP Discovery",
+        data=report_data
     )
 
     log("Real IP discovery completed")
