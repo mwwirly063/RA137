@@ -384,7 +384,6 @@ def censys_search(query):
 
 
 def build_queries(favicon_hash,
-                  title,
                   cert_hash,
                   jarm):
 
@@ -403,22 +402,6 @@ def build_queries(favicon_hash,
             "censys": (
                 "services.http.response."
                 f"favicons.mmh3_hash:{favicon_hash}"
-            )
-        })
-
-    if title:
-
-        queries.append({
-            "type": "title",
-            "shodan": (
-                f'http.title:"{title}"'
-            ),
-            "fofa": (
-                f'title="{title}"'
-            ),
-            "censys": (
-                "services.http.response."
-                f"html_title:{title}"
             )
         })
 
@@ -535,7 +518,6 @@ def real_ip_discovery(output_dir):
 
         queries = build_queries(
             favicon_hash,
-            title,
             cert_hash,
             jarm
         )
