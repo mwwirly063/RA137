@@ -8,6 +8,7 @@ from utils.paths import create_target_output
 from modules.cert_discovery import cert_discovery
 from modules.check_cdn import filter_non_cdn_ips
 from modules.tech_detect import tech_detection
+from modules.realip_discovery import real_ip_discovery
 
 TARGETS_FILE = Path("targets.txt")
 
@@ -69,6 +70,10 @@ def main():
             output_dir=target_output
         )
         
+        real_ip_discovery(
+            output_dir=target_output
+        )
+
         log(f"Finished target: {target}")
 
     log("All targets completed")    
