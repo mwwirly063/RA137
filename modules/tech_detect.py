@@ -119,12 +119,11 @@ def run_gow(ip_file, output_dir):
 
     log("Running gow screenshot scan")
 
-
-     cmd = (
-        f"cd "{output_dir}" && "
-        f"gow scan file "
-        f"-f ip.txt "
-        f"--screenshot-fullpage"
+    cmd = (
+        f'cd "{output_dir}" && '
+        f'gow scan file '
+        f'-f "ip.txt" '
+        f'--screenshot-fullpage'
     )
 
     run_command(cmd)
