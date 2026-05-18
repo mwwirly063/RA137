@@ -128,6 +128,8 @@ pip3 install --break-system-packages \
 
 echo "[+] Installing JARM"
 
+git clone https://github.com/salesforce/jarm.git
+
 cd /root/RA137/jarm
 
 pip3 install --break-system-packages \
