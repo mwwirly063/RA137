@@ -107,11 +107,28 @@ mv gow $BIN_DIR/
 
 echo "[+] Installing google-chrome"
 
+apt install -y \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libatspi2.0-0 \
+    libcairo2 \
+    libcups2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libpango-1.0-0 \
+    libvulkan1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    xdg-utils
+
 wget -q -O chrome.deb \
 "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
 
-sudo apt --fix-broken install ./chrome.deb
-sudo apt-get install -f
+apt install -y ./chrome.deb
 
 
 echo "[+] Installing Python libraries"
