@@ -142,6 +142,9 @@ fi
 
 cd /root/RA137/jarm
 
+pip3 install --break-system-packages \ 
+    -r requirements.txt
+
 
 echo "[+] Updating nuclei templates"
 
