@@ -123,7 +123,8 @@ pip3 install --break-system-packages \
     cryptography \
     dnspython \
     urllib3 \
-    tldextract
+    tldextract \
+    openai
 
 
 echo "[+] Installing JARM"
