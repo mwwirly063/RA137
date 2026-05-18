@@ -128,14 +128,19 @@ pip3 install --break-system-packages \
 
 echo "[+] Installing JARM"
 
-git clone https://github.com/salesforce/jarm.git
+if [ ! -d "/root/RA137/jarm" ]; then
+
+    git clone https://github.com/salesforce/jarm.git /root/RA137/jarm
+
+else
+
+    cd /root/RA137/jarm
+
+    git pull
+
+fi
 
 cd /root/RA137/jarm
-
-pip3 install --break-system-packages \
-    -r requirements.txt
-
-cd ..
 
 
 echo "[+] Updating nuclei templates"
