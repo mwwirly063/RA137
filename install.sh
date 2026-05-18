@@ -62,6 +62,7 @@ download_binary \
 "https://github.com/projectdiscovery/httpx/releases/download/v1.9.0/httpx_1.9.0_linux_amd64.zip" \
 "httpx.zip" \
 "httpx"
+echo "......"
 
 
 echo "[+] Installing dnsx"
