@@ -107,6 +107,10 @@ mv gow $BIN_DIR/
 
 echo "[+] Installing google-chrome"
 
+apt --fix-broken install -y
+
+apt update
+
 apt install -y \
     fonts-liberation \
     libasound2 \
