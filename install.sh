@@ -108,7 +108,7 @@ mv gow $BIN_DIR/
 echo "[+] Installing google-chrome"
 
 wget -q -O chrome.deb \
-"wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+"https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
 
 sudo dpkg -i chrome.deb
 
