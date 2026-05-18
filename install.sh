@@ -130,7 +130,9 @@ echo "[+] Installing JARM"
 
 if [ ! -d "/root/RA137/jarm" ]; then
 
-    git clone https://github.com/salesforce/jarm.git /root/RA137/jarm
+    git clone \
+    https://github.com/salesforce/jarm.git \
+    /root/RA137/jarm
 
 else
 
@@ -142,7 +144,7 @@ fi
 
 cd /root/RA137/jarm
 
-pip3 install --break-system-packages \ 
+pip3 install --break-system-packages \
     -r requirements.txt
 
 
