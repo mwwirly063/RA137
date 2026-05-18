@@ -22,7 +22,8 @@ apt install -y \
     unzip \
     git \
     python3 \
-    python3-pip
+    python3-pip \
+    jq
 
 
 download_binary() {
@@ -49,7 +50,7 @@ echo "[+] Installing subfinder"
 
 download_binary \
 "subfinder" \
-"https://github.com/projectdiscovery/subfinder/releases/latest/download/subfinder_linux_amd64.zip" \
+"https://github.com/projectdiscovery/subfinder/releases/download/v2.14.0/subfinder_2.14.0_linux_amd64.zip" \
 "subfinder.zip" \
 "subfinder"
 
@@ -58,16 +59,16 @@ echo "[+] Installing httpx"
 
 download_binary \
 "httpx" \
-"https://github.com/projectdiscovery/httpx/releases/latest/download/httpx_linux_amd64.zip" \
+"https://github.com/projectdiscovery/httpx/releases/download/v1.9.0/httpx_1.9.0_linux_amd64.zip" \
 "httpx.zip" \
-"httpx"
+"httpxx"
 
 
 echo "[+] Installing dnsx"
 
 download_binary \
 "dnsx" \
-"https://github.com/projectdiscovery/dnsx/releases/latest/download/dnsx_linux_amd64.zip" \
+"https://github.com/projectdiscovery/dnsx/releases/download/v1.2.3/dnsx_1.2.3_linux_amd64.zip" \
 "dnsx.zip" \
 "dnsx"
 
@@ -76,7 +77,7 @@ echo "[+] Installing nuclei"
 
 download_binary \
 "nuclei" \
-"https://github.com/projectdiscovery/nuclei/releases/latest/download/nuclei_linux_amd64.zip" \
+"https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_linux_amd64.zip" \
 "nuclei.zip" \
 "nuclei"
 
@@ -84,7 +85,7 @@ download_binary \
 echo "[+] Installing gobuster"
 
 wget -q -O gobuster.tar.gz \
-"https://github.com/OJ/gobuster/releases/latest/download/gobuster_Linux_x86_64.tar.gz"
+"https://github.com/OJ/gobuster/releases/download/v3.8.2/gobuster_Linux_x86_64.tar.gz"
 
 tar -xzf gobuster.tar.gz
 
@@ -95,14 +96,21 @@ mv gobuster $BIN_DIR/
 
 echo "[+] Installing gow"
 
-wget -q -O gow.zip \
-"https://github.com/chenjj/gow/releases/latest/download/gow_linux_amd64.zip"
+wget -q -O gow \
+"https://github.com/sensepost/gowitness/releases/download/3.1.1/gowitness-3.1.1-linux-amd64"
 
-unzip -o gow.zip
 
 chmod +x gow
 
 mv gow $BIN_DIR/
+
+echo "[+] Installing google-chrome"
+
+wget -q -O chrome.deb \
+"wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+
+sudo dpkg -i chrome.deb
+
 
 
 echo "[+] Installing Python libraries"
@@ -129,7 +137,7 @@ cd ..
 
 echo "[+] Updating nuclei templates"
 
-nuclei -update-templates
+nuclei
 
 
 echo "[+] Cleaning"
