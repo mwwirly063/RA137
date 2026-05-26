@@ -10,6 +10,7 @@ from modules.cert_discovery import cert_discovery
 from modules.check_cdn import filter_non_cdn_ips
 from modules.tech_detect import tech_detection
 from modules.realip_discovery import real_ip_discovery
+from modules.ripe_recon import ripe_recon
 from modules.vuln_check import nuclei_scan
 
 
@@ -25,6 +26,7 @@ STEPS = [
     "cert_discovery",
     "tech_detection",
     "realip_discovery",
+    "ripe_recon",
     "vuln_check"
 ]
 
@@ -215,6 +217,24 @@ def main():
             mark_step_done(
                 target,
                 "realip_discovery"
+            )
+
+            log_data = load_log()
+
+        if not step_completed(
+            log_data,
+            target,
+            "ripe_recon"
+        ):
+
+            ripe_recon(
+                target=target,
+                output_dir=target_output
+            )
+
+            mark_step_done(
+                target,
+                "ripe_recon"
             )
 
             log_data = load_log()
