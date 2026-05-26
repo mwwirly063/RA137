@@ -164,4 +164,18 @@ def tech_detection(output_dir):
         output_dir
     )
 
+    report_lines = []
+
+    for result_file in [pure_httpx_file, waf_file, iis_file, other_default_file]:
+
+        if result_file.exists():
+
+            with open(result_file, "r", encoding="utf-8") as f:
+                report_lines.extend(f.read().splitlines())
+
+    generate_ai_report(
+        module_name="Tech Detection",
+        data="\n".join(report_lines)
+    )
+
     log("Tech detection completed")

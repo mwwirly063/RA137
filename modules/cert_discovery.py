@@ -1,6 +1,7 @@
 import ipaddress
 import socket
 import ssl
+import threading
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -14,6 +15,8 @@ from utils.logger import log
 SSL_TIMEOUT = 5
 
 PORTS = [443, 4443, 7443, 8443, 10443]
+
+_write_lock = threading.Lock()
 
 
 def get_cert_domains(ip, port=443):
@@ -125,8 +128,9 @@ def check_ip(ip, target, output_file):
 
             log(line)
 
-            with open(output_file, "a") as f:
-                f.write(line + "\n")
+            with _write_lock:
+                with open(output_file, "a") as f:
+                    f.write(line + "\n")
 
 
 def cert_discovery(target, output_dir):

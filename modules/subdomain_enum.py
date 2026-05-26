@@ -63,7 +63,15 @@ def run_gobuster(domain: str, wordlist_path: str, output_dir):
                 if not line:
                     continue
 
-                sub = line.split()[0]
+                # skip non-domain lines (e.g. "Found:", banners)
+                parts = line.split()
+
+                sub = None
+
+                for part in parts:
+                    if "." in part:
+                        sub = part
+                        break
 
                 if sub:
                     subdomains.add(sub)

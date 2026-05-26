@@ -1,6 +1,8 @@
 import base64
+import difflib
 import ipaddress
 import json
+import os
 import mmh3
 import random
 import re
@@ -11,10 +13,16 @@ import time
 import jarm
 
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import NameOID
 from urllib.parse import urljoin
+
+try:
+    import dns.resolver
+except ImportError:
+    dns = None
 
 from utils.ai_report import generate_ai_report
 from utils.logger import log
@@ -62,11 +70,21 @@ COMMON_SHARED_VHOSTS = [
 ]
 
 
-SHODAN_API_KEY = "uqynQfof7hjyMvuq2mRVjA7Sm32UNjP0"
-FOFA_EMAIL = "mwwirly063@caterpillarink.site"
-FOFA_API_KEY = "ffc34816444da92636d40ab4eeb80976"
-CENSYS_API_ID = "i8qWeSyc"
-CENSYS_API_SECRET = "censys_i8qWeSyc_7xwRnG8vixdpEhNopB7zoxvG"
+SHODAN_API_KEY = os.getenv("SHODAN_API_KEY")
+FOFA_EMAIL = os.getenv("FOFA_EMAIL")
+FOFA_API_KEY = os.getenv("FOFA_API_KEY")
+CENSYS_API_ID = os.getenv("CENSYS_API_ID")
+CENSYS_API_SECRET = os.getenv("CENSYS_API_SECRET")
+
+MAX_RESULTS = 500
+
+SECURITYTRAILS_API_KEY = os.getenv("SECURITYTRAILS_API_KEY")
+
+session = requests.Session()
+session.verify = False
+session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+_api_cache = {}
 
 
 def rate_limit():
@@ -98,7 +116,8 @@ def load_cdn_ranges():
                     ipaddress.ip_network(line)
                 )
 
-            except Exception:
+            except Exception as e:
+                log(f"CDN range parse error: {e}")
                 continue
 
     return cidrs
@@ -117,7 +136,8 @@ def is_cdn_ip(ip, cidrs):
 
         return False
 
-    except Exception:
+    except Exception as e:
+        log(f"CDN IP check error: {e}")
         return False
 
 
@@ -125,17 +145,11 @@ def get_favicon_hash(url):
 
     try:
 
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
         rate_limit()
 
-        response = requests.get(
+        response = session.get(
             url,
-            timeout=10,
-            headers=headers,
-            verify=False
+            timeout=10
         )
 
         if response.status_code != 200:
@@ -195,11 +209,9 @@ def get_favicon_hash(url):
 
                     rate_limit()
 
-                    test_response = requests.head(
+                    test_response = session.head(
                         test_url,
-                        timeout=5,
-                        headers=headers,
-                        verify=False
+                        timeout=5
                     )
 
                     if (
@@ -210,7 +222,8 @@ def get_favicon_hash(url):
                         favicon_url = path
                         break
 
-                except Exception:
+                except Exception as e:
+                    log(f"Favicon probe error for {path}: {e}")
                     continue
 
         if not favicon_url:
@@ -223,11 +236,9 @@ def get_favicon_hash(url):
 
         rate_limit()
 
-        favicon_response = requests.get(
+        favicon_response = session.get(
             full_favicon_url,
-            timeout=10,
-            headers=headers,
-            verify=False
+            timeout=10
         )
 
         if favicon_response.status_code != 200:
@@ -292,8 +303,8 @@ def get_ssl_domains(ip,
 
             result.add(cn.lower())
 
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"SSL CN extraction error: {e}")
 
         try:
 
@@ -311,13 +322,24 @@ def get_ssl_domains(ip,
                     san.lower()
                 )
 
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"SSL SAN extraction error: {e}")
 
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"SSL connection error for {ip}:{port}: {e}")
 
     return result
+
+
+def is_subdomain(sub, parent):
+
+    sub = sub.lower().rstrip(".")
+    parent = parent.lower().rstrip(".")
+
+    return (
+        sub == parent or
+        sub.endswith("." + parent)
+    )
 
 
 def check_certificate_match(
@@ -333,10 +355,7 @@ def check_certificate_match(
 
         for domain in domains:
 
-            if (
-                target.lower()
-                in domain
-            ):
+            if is_subdomain(domain, target):
 
                 for item in COMMON_SHARED_CERTS:
 
@@ -356,14 +375,11 @@ def check_vhost_match(
 
         rate_limit()
 
-        response = requests.get(
+        response = session.get(
             f"https://{ip}",
             headers={
-                "Host": target,
-                "User-Agent":
-                "Mozilla/5.0"
+                "Host": target
             },
-            verify=False,
             timeout=8
         )
 
@@ -381,65 +397,106 @@ def check_vhost_match(
 
             return True
 
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"VHost check error for {ip}: {e}")
 
     return False
 
 
-def get_jarm(host, port=443):
+def get_jarm(host):
 
-    try:
+    hashes = set()
 
-        result = jarm.Scanner.scan(
-            host,
-            port
-        )
+    for port in SSL_PORTS:
 
-        return result
+        try:
 
-    except Exception:
-        return None
+            result = jarm.Scanner.scan(
+                host,
+                port
+            )
+
+            if result and result != "0" * 62:
+                hashes.add(result)
+
+        except Exception as e:
+
+            log(f"JARM error on {host}:{port}: {e}")
+
+    return list(hashes)
 
 
 def shodan_search(query):
 
+    cache_key = f"shodan:{query}"
+
+    if cache_key in _api_cache:
+        log(f"Cache hit: {cache_key}")
+        return _api_cache[cache_key]
+
     results = set()
+
+    offset = 0
 
     try:
 
-        rate_limit()
+        while len(results) < MAX_RESULTS:
 
-        url = (
-            f"https://api.shodan.io/shodan/host/search"
-            f"?key={SHODAN_API_KEY}"
-            f"&query={query}"
-        )
+            rate_limit()
 
-        response = requests.get(
-            url,
-            timeout=20
-        )
+            url = (
+                f"https://api.shodan.io/shodan/host/search"
+                f"?key={SHODAN_API_KEY}"
+                f"&query={query}"
+                f"&offset={offset}"
+            )
 
-        data = response.json()
+            response = session.get(
+                url,
+                timeout=20
+            )
 
-        for match in data.get("matches", []):
+            data = response.json()
 
-            ip = match.get("ip_str")
+            matches = data.get("matches", [])
 
-            if ip:
-                results.add(ip)
+            if not matches:
+                break
+
+            for match in matches:
+
+                ip = match.get("ip_str")
+
+                if ip:
+                    results.add(ip)
+
+            total = data.get("total", len(matches))
+
+            offset += len(matches)
+
+            if offset >= total:
+                break
 
     except Exception as e:
 
         log(f"Shodan error: {e}")
+
+    _api_cache[cache_key] = results
 
     return results
 
 
 def fofa_search(query):
 
+    cache_key = f"fofa:{query}"
+
+    if cache_key in _api_cache:
+        log(f"Cache hit: {cache_key}")
+        return _api_cache[cache_key]
+
     results = set()
+
+    page = 1
 
     try:
 
@@ -447,83 +504,119 @@ def fofa_search(query):
             query.encode()
         ).decode()
 
-        rate_limit()
+        while len(results) < MAX_RESULTS:
 
-        url = (
-            f"https://fofa.info/api/v1/search/all"
-            f"?email={FOFA_EMAIL}"
-            f"&key={FOFA_API_KEY}"
-            f"&qbase64={query_base64}"
-        )
+            rate_limit()
 
-        response = requests.get(
-            url,
-            timeout=20
-        )
+            url = (
+                f"https://fofa.info/api/v1/search/all"
+                f"?email={FOFA_EMAIL}"
+                f"&key={FOFA_API_KEY}"
+                f"&qbase64={query_base64}"
+                f"&page={page}"
+            )
 
-        data = response.json()
+            response = session.get(
+                url,
+                timeout=20
+            )
 
-        for item in data.get("results", []):
+            data = response.json()
 
-            ip = item[0]
+            items = data.get("results", [])
 
-            if re.match(IP_REGEX, ip):
-                results.add(ip)
+            if not items:
+                break
+
+            for item in items:
+
+                ip = item[0]
+
+                if re.match(IP_REGEX, ip):
+                    results.add(ip)
+
+            total = data.get("size", len(items))
+
+            if page * len(items) >= total:
+                break
+
+            page += 1
 
     except Exception as e:
 
         log(f"FOFA error: {e}")
+
+    _api_cache[cache_key] = results
 
     return results
 
 
 def censys_search(query):
 
+    cache_key = f"censys:{query}"
+
+    if cache_key in _api_cache:
+        log(f"Cache hit: {cache_key}")
+        return _api_cache[cache_key]
+
     results = set()
+
+    cursor = None
 
     try:
 
-        rate_limit()
+        while len(results) < MAX_RESULTS:
 
-        url = (
-            "https://search.censys.io/api/v2/hosts/search"
-        )
+            rate_limit()
 
-        payload = {
-            "q": query,
-            "per_page": 100
-        }
+            url = (
+                "https://search.censys.io/api/v2/hosts/search"
+            )
 
-        response = requests.post(
-            url,
-            auth=(
-                CENSYS_API_ID,
-                CENSYS_API_SECRET
-            ),
-            json=payload,
-            timeout=20
-        )
+            payload = {
+                "q": query,
+                "per_page": 100
+            }
 
-        data = response.json()
+            if cursor:
+                payload["cursor"] = cursor
 
-        hits = data.get(
-            "result",
-            {}
-        ).get(
-            "hits",
-            []
-        )
+            response = session.post(
+                url,
+                auth=(
+                    CENSYS_API_ID,
+                    CENSYS_API_SECRET
+                ),
+                json=payload,
+                timeout=20
+            )
 
-        for hit in hits:
+            data = response.json()
 
-            ip = hit.get("ip")
+            result_data = data.get("result", {})
 
-            if ip:
-                results.add(ip)
+            hits = result_data.get("hits", [])
+
+            if not hits:
+                break
+
+            for hit in hits:
+
+                ip = hit.get("ip")
+
+                if ip:
+                    results.add(ip)
+
+            cursor = result_data.get("links", {}).get("next")
+
+            if not cursor:
+                break
 
     except Exception as e:
 
         log(f"Censys error: {e}")
+
+    _api_cache[cache_key] = results
 
     return results
 
@@ -550,20 +643,166 @@ def build_queries(
             )
         })
 
-    if jarm:
+    jarm_hashes = jarm
+
+    if not isinstance(jarm_hashes, list):
+        jarm_hashes = [jarm_hashes] if jarm_hashes else []
+
+    for jarm_hash in jarm_hashes:
+
+        if not jarm_hash:
+            continue
 
         queries.append({
             "type": "jarm",
             "shodan": (
-                f"ssl.jarm:{jarm}"
+                f"ssl.jarm:{jarm_hash}"
             ),
             "fofa": None,
             "censys": (
-                f"services.jarm.fingerprint:{jarm}"
+                f"services.jarm.fingerprint:{jarm_hash}"
             )
         })
 
     return queries
+
+
+def check_body_similarity(ip, target):
+
+    try:
+
+        rate_limit()
+
+        cdn_response = session.get(
+            f"https://{target}",
+            timeout=10,
+            allow_redirects=True
+        )
+
+        rate_limit()
+
+        ip_response = session.get(
+            f"https://{ip}",
+            headers={"Host": target},
+            timeout=10,
+            allow_redirects=True
+        )
+
+        if (
+            cdn_response.status_code != 200 or
+            ip_response.status_code != 200
+        ):
+            return False
+
+        cdn_text = cdn_response.text[:5000]
+        ip_text = ip_response.text[:5000]
+
+        ratio = difflib.SequenceMatcher(
+            None,
+            cdn_text,
+            ip_text
+        ).ratio()
+
+        log(f"Body similarity {ip} vs {target}: {ratio:.2f}")
+
+        return ratio >= 0.6
+
+    except Exception as e:
+
+        log(f"Body similarity error for {ip}: {e}")
+
+        return False
+
+
+def get_cname_ips(domain):
+
+    results = set()
+
+    if dns is None:
+        log("dnspython not installed, skipping CNAME analysis")
+        return results
+
+    try:
+
+        try:
+            answers = dns.resolver.resolve(domain, "CNAME")
+        except Exception as e:
+            log(f"CNAME resolve error for {domain}: {e}")
+            return results
+
+        for rdata in answers:
+
+            cname = str(rdata.target).rstrip(".")
+
+            log(f"CNAME chain: {domain} -> {cname}")
+
+            try:
+                a_answers = dns.resolver.resolve(cname, "A")
+
+                for a_record in a_answers:
+                    ip = str(a_record)
+                    results.add(ip)
+
+            except Exception as e:
+                log(f"CNAME A-record error for {cname}: {e}")
+
+    except Exception as e:
+        log(f"CNAME analysis error for {domain}: {e}")
+
+    return results
+
+
+def securitytrails_history(domain):
+
+    results = set()
+
+    if not SECURITYTRAILS_API_KEY:
+        return results
+
+    cache_key = f"securitytrails:{domain}"
+
+    if cache_key in _api_cache:
+        log(f"Cache hit: {cache_key}")
+        return _api_cache[cache_key]
+
+    try:
+
+        rate_limit()
+
+        url = (
+            f"https://api.securitytrails.com/v1/history/{domain}/dns/a"
+        )
+
+        response = session.get(
+            url,
+            headers={
+                "APIKEY": SECURITYTRAILS_API_KEY,
+                "Accept": "application/json"
+            },
+            timeout=20
+        )
+
+        if response.status_code != 200:
+            log(f"SecurityTrails returned {response.status_code}")
+            return results
+
+        data = response.json()
+
+        for record in data.get("records", []):
+
+            for value in record.get("values", []):
+
+                ip = value.get("ip")
+
+                if ip:
+                    results.add(ip)
+
+    except Exception as e:
+        log(f"SecurityTrails error for {domain}: {e}")
+
+    _api_cache[cache_key] = results
+
+    return results
 
 
 def validate_real_ip(
@@ -572,7 +811,8 @@ def validate_real_ip(
         favicon_match=False,
         cert_match=False,
         vhost_match=False,
-        jarm_match=False):
+        jarm_match=False,
+        body_match=False):
 
     score = 0
 
@@ -581,6 +821,9 @@ def validate_real_ip(
 
     if jarm_match:
         score += 2
+
+    if body_match:
+        score += 3
 
     if vhost_match:
         score += 4
@@ -662,7 +905,7 @@ def real_ip_discovery(output_dir):
 
     all_results = []
 
-    for target in subdomains:
+    def process_subdomain(target):
 
         log(
             f"Fingerprinting {target}"
@@ -674,16 +917,18 @@ def real_ip_discovery(output_dir):
             url
         )
 
-        jarm_hash = get_jarm(
+        jarm_hashes = get_jarm(
             target
         )
 
         queries = build_queries(
             favicon_hash,
-            jarm_hash
+            jarm_hashes
         )
 
-        target_results = set()
+        favicon_ips = set()
+
+        jarm_ips = set()
 
         matched_by = []
 
@@ -706,9 +951,10 @@ def real_ip_discovery(output_dir):
                         f"shodan-{query_type}"
                     )
 
-                    target_results.update(
-                        results
-                    )
+                    if query_type == "favicon":
+                        favicon_ips.update(results)
+                    elif query_type == "jarm":
+                        jarm_ips.update(results)
 
             if (
                 FOFA_EMAIL and
@@ -726,9 +972,10 @@ def real_ip_discovery(output_dir):
                         f"fofa-{query_type}"
                     )
 
-                    target_results.update(
-                        results
-                    )
+                    if query_type == "favicon":
+                        favicon_ips.update(results)
+                    elif query_type == "jarm":
+                        jarm_ips.update(results)
 
             if (
                 CENSYS_API_ID and
@@ -746,9 +993,20 @@ def real_ip_discovery(output_dir):
                         f"censys-{query_type}"
                     )
 
-                    target_results.update(
-                        results
-                    )
+                    if query_type == "favicon":
+                        favicon_ips.update(results)
+                    elif query_type == "jarm":
+                        jarm_ips.update(results)
+
+        # CNAME chain analysis
+        cname_ips = get_cname_ips(target)
+
+        # SecurityTrails DNS history
+        history_ips = securitytrails_history(target)
+
+        target_results = favicon_ips | jarm_ips | cname_ips | history_ips
+
+        target_results_list = []
 
         for ip in target_results:
 
@@ -762,13 +1020,19 @@ def real_ip_discovery(output_dir):
                 target
             )
 
+            body_match = check_body_similarity(
+                ip,
+                target
+            )
+
             valid, score = validate_real_ip(
                 ip=ip,
                 target=target,
-                favicon_match=True,
+                favicon_match=(ip in favicon_ips),
                 cert_match=cert_match,
                 vhost_match=vhost_match,
-                jarm_match=True
+                jarm_match=(ip in jarm_ips),
+                body_match=body_match
             )
 
             if not valid:
@@ -780,12 +1044,32 @@ def real_ip_discovery(output_dir):
                 "score": score,
                 "cert_match": cert_match,
                 "vhost_match": vhost_match,
+                "body_match": body_match,
                 "matched_by": matched_by
             }
 
-            all_results.append(
-                result
-            )
+            target_results_list.append(result)
+
+        return target_results_list
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+
+        futures = {
+            executor.submit(process_subdomain, sub): sub
+            for sub in subdomains
+        }
+
+        for future in as_completed(futures):
+
+            try:
+
+                results = future.result()
+                all_results.extend(results)
+
+            except Exception as e:
+
+                sub = futures[future]
+                log(f"Error processing {sub}: {e}")
 
     save_results(
         all_results,

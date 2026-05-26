@@ -131,6 +131,8 @@ def main():
                 "subdomain_enum"
             )
 
+            log_data = load_log()
+
         if not step_completed(
             log_data,
             target,
@@ -146,6 +148,8 @@ def main():
                 "ip_extractor"
             )
 
+            log_data = load_log()
+
         if not step_completed(
             log_data,
             target,
@@ -160,6 +164,8 @@ def main():
                 target,
                 "check_cdn"
             )
+
+            log_data = load_log()
 
         if not step_completed(
             log_data,
@@ -177,6 +183,8 @@ def main():
                 "cert_discovery"
             )
 
+            log_data = load_log()
+
         if not step_completed(
             log_data,
             target,
@@ -191,6 +199,8 @@ def main():
                 target,
                 "tech_detection"
             )
+
+            log_data = load_log()
 
         if not step_completed(
             log_data,
@@ -207,6 +217,8 @@ def main():
                 "realip_discovery"
             )
 
+            log_data = load_log()
+
         if not step_completed(
             log_data,
             target,
@@ -221,6 +233,8 @@ def main():
                 target,
                 "vuln_check"
             )
+
+            log_data = load_log()
 
         log(
             f"Finished target: {target}"
