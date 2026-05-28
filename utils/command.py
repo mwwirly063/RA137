@@ -1,76 +1,171 @@
+"""
+Safe shell-command execution with retries, timeouts, and structured results.
+
+Supports two calling conventions:
+- **list** of arguments → ``shell=False`` (safe; no injection possible)
+- **string** command    → ``shell=True`` (legacy; caller must sanitise inputs)
+
+All new code should pass a *list* to avoid shell injection.
+"""
+
 import subprocess
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Optional, Union
+
+from utils.logger import get_logger
+
+_log = get_logger("CMD")
+
+# Type alias: callers may pass either a list (preferred) or a string (legacy)
+CmdArg = Union[List[str], str]
+
+
+@dataclass
+class CommandResult:
+    """Structured result of a shell command execution."""
+    success: bool = False
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = -1
+    timed_out: bool = False
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 def run_command(
-    cmd,
-    output_file=None,
-    timeout=10000,
-    silent=True
-):
+    cmd: CmdArg,
+    output_file: Optional[Path] = None,
+    timeout: int = 10000,
+    retries: int = 2,
+    backoff_factor: float = 2.0,
+    silent: bool = True,
+    cwd: Optional[Path] = None,
+) -> CommandResult:
     """
-    Run shell command safely.
+    Run a shell command with retry logic and timeout handling.
 
-    Args:
-        cmd (str): command to execute
-        output_file (str): optional output file
-        timeout (int): timeout in seconds
-        silent (bool): suppress stderr/stdout
+    Parameters
+    ----------
+    cmd :
+        A **list** of arguments (preferred – uses ``shell=False``) or a
+        plain **string** (legacy – uses ``shell=True``; inputs MUST be
+        sanitised by the caller).
+    output_file :
+        If given, stdout is redirected to this file.
+    timeout :
+        Per-attempt timeout in seconds.
+    retries :
+        Number of retry attempts after a failure.
+    backoff_factor :
+        Multiplier for exponential-backoff between retries.
+    silent :
+        Suppress stderr on stdout redirect.
+    cwd :
+        Working directory for the child process.
 
-    Returns:
-        tuple(bool, str):
-            success status,
-            stdout/error message
+    Returns
+    -------
+    ``CommandResult`` with execution details.
     """
+    if output_file is not None:
+        output_file = Path(output_file)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
+    # Determine shell mode from argument type
+    use_shell = isinstance(cmd, str)
 
-        stdout_target = subprocess.PIPE
-        stderr_target = subprocess.PIPE
+    # Build a display string for logging (truncated)
+    display = cmd if use_shell else " ".join(cmd)
 
-        # Save output to file
-        if output_file:
-            output_path = Path(output_file)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
+    last_error = ""
+    last_rc = -1
 
-            with open(output_path, "w") as f:
-
-                result = subprocess.run(
+    for attempt in range(retries + 1):
+        try:
+            # --- run the command -------------------------------------------
+            if output_file is not None:
+                with open(output_file, "w", encoding="utf-8") as fh:
+                    proc = subprocess.run(
+                        cmd,
+                        shell=use_shell,
+                        stdout=fh,
+                        stderr=subprocess.PIPE if not silent else subprocess.DEVNULL,
+                        text=True,
+                        timeout=timeout,
+                        cwd=cwd,
+                    )
+                stdout_text = ""
+                stderr_text = (proc.stderr or "").strip() if not silent else ""
+            else:
+                proc = subprocess.run(
                     cmd,
-                    shell=True,
-                    stdout=f,
-                    stderr=subprocess.PIPE if not silent else subprocess.DEVNULL,
+                    shell=use_shell,
+                    capture_output=True,
                     text=True,
-                    timeout=timeout
+                    timeout=timeout,
+                    cwd=cwd,
+                )
+                stdout_text = proc.stdout or ""
+                stderr_text = (proc.stderr or "").strip()
+
+            last_rc = proc.returncode
+
+            if proc.returncode == 0:
+                return CommandResult(
+                    success=True,
+                    stdout=stdout_text,
+                    stderr=stderr_text,
+                    returncode=0,
+                    timed_out=False,
                 )
 
-        else:
+            # Non-zero exit – log and maybe retry
+            last_error = stderr_text or f"exit code {proc.returncode}"
+            _log.warning(f"Command exited {proc.returncode}: {display[:120]}")
+            if stderr_text:
+                _log.warning(f"  stderr: {stderr_text[:300]}")
 
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout
+        except subprocess.TimeoutExpired:
+            last_error = f"timeout after {timeout}s"
+            _log.warning(f"Timeout: {display[:120]}")
+            if attempt == retries:
+                return CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr=last_error,
+                    returncode=-1,
+                    timed_out=True,
+                )
+
+        except FileNotFoundError as exc:
+            # Binary not found – no point retrying
+            last_error = str(exc)
+            _log.error(f"Binary not found: {exc}")
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=last_error,
+                returncode=127,
+                timed_out=False,
             )
 
-        if result.returncode != 0:
+        except Exception as exc:
+            last_error = str(exc)
+            _log.error(f"Exception: {exc}")
 
-            error_msg = result.stderr.strip() if result.stderr else "Unknown error"
+        # --- backoff before retry ------------------------------------------
+        if attempt < retries:
+            wait = backoff_factor ** (attempt + 1)
+            _log.info(f"Retry: waiting {wait:.1f}s before attempt {attempt + 2}/{retries + 1}")
+            time.sleep(wait)
 
-            print(f"[ERROR] Command failed: {cmd}")
-            print(f"[ERROR] {error_msg}")
-
-            return False, error_msg
-
-        return True, result.stdout if not output_file else ""
-
-    except subprocess.TimeoutExpired:
-
-        print(f"[TIMEOUT] {cmd}")
-        return False, "Timeout"
-
-    except Exception as e:
-
-        print(f"[EXCEPTION] {e}")
-        return False, str(e)
+    return CommandResult(
+        success=False,
+        stdout="",
+        stderr=last_error,
+        returncode=last_rc,
+        timed_out=("timeout" in last_error.lower()),
+    )

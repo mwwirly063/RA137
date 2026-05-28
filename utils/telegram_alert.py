@@ -1,139 +1,129 @@
-import json
-import requests
+"""
+Telegram alert module for RA137.
 
-from utils.logger import log
-
-
-TELEGRAM_BOT_TOKEN = "8661600276:AAEKf9f160uDfR4foZMjJfnrUUvKcGCZ7Z8"
-TELEGRAM_CHAT_ID = "8288341341"
-
-
-def send_telegram_alert(target, ip, vuln_info):
-
-    try:
-
-        severity = vuln_info.get(
-            "info",
-            {}
-        ).get(
-            "severity",
-            "unknown"
-        )
-
-        name = vuln_info.get(
-            "info",
-            {}
-        ).get(
-            "name",
-            "unknown"
-        )
-
-        template_id = vuln_info.get(
-            "template-id",
-            "unknown"
-        )
-
-        matched_at = vuln_info.get(
-            "matched-at",
-            "N/A"
-        )
-
-        curl_command = vuln_info.get(
-            "curl-command",
-            "N/A"
-        )
-
-        message = f"""
-🚨 VULNERABILITY ALERT 🚨
-
-Target: {target}
-IP: {ip}
-
-Severity: {severity}
-Name: {name}
-Template: {template_id}
-
-URL: {matched_at}
-
-Curl:
-{curl_command}
+Sends vulnerability notifications to a Telegram chat.  Findings are batched
+into a single message (or a small number of messages) to respect Telegram's
+rate limits (~30 messages/sec to the same chat).
 """
 
-        url = (
-            f"https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}"
-            f"/sendMessage"
-        )
+import json
+import time
+from pathlib import Path
+from typing import List
 
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message
-        }
+from utils.config import get_config
+from utils.http_session import get_session
+from utils.logger import get_logger
 
-        requests.post(
-            url,
-            json=payload,
-            timeout=10
-        )
+_log = get_logger("TELEGRAM")
 
-        log(
-            f"Telegram alert sent for {ip}"
-        )
-
-    except Exception as e:
-
-        log(
-            f"Telegram alert failed: {e}"
-        )
+# Telegram allows ~30 messages/second per chat.  We stay well under.
+_BATCH_SIZE = 20          # findings per message
+_INTER_BATCH_DELAY = 1.5  # seconds between batch sends
 
 
-def send_nuclei_results_to_telegram(
-        output_dir):
-
-    json_file = (
-        output_dir /
-        "nuclei_results.json"
+def _get_telegram_credentials():
+    """Load Telegram credentials from config."""
+    config = get_config()
+    return (
+        config.api_keys.telegram_bot_token or "",
+        config.api_keys.telegram_chat_id or "",
     )
 
+
+def _format_vuln(vuln_info: dict) -> str:
+    """Format a single vulnerability into a readable text block."""
+    severity = vuln_info.get("info", {}).get("severity", "unknown")
+    name = vuln_info.get("info", {}).get("name", "unknown")
+    template_id = vuln_info.get("template-id", "unknown")
+    matched_at = vuln_info.get("matched-at", "N/A")
+    curl_command = vuln_info.get("curl-command", "N/A")
+    ip = vuln_info.get("ip", "unknown")
+    target = vuln_info.get("host", ip)
+
+    return (
+        f"IP: {ip} | Target: {target}\n"
+        f"Severity: {severity} | {name}\n"
+        f"Template: {template_id}\n"
+        f"URL: {matched_at}\n"
+        f"Curl: {curl_command}"
+    )
+
+
+def _send_message(bot_token: str, chat_id: str, text: str) -> bool:
+    """Send a single message to Telegram."""
+    sess = get_session()
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        resp = sess.post(url, json={"chat_id": chat_id, "text": text}, timeout=10)
+        if resp.status_code == 200:
+            return True
+        _log.warning(f"Telegram API returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as exc:
+        _log.error(f"Telegram send failed: {exc}")
+    return False
+
+
+def send_nuclei_results_to_telegram(output_dir: Path) -> None:
+    """
+    Read nuclei JSON results and send batched Telegram alerts.
+
+    Groups findings into batches of ``_BATCH_SIZE`` to stay well within
+    Telegram's rate limits.
+
+    Parameters
+    ----------
+    output_dir : Path
+        Directory containing ``nuclei_results.json``.
+    """
+    json_file = Path(output_dir) / "nuclei_results.json"
     if not json_file.exists():
-
-        log(
-            "nuclei_results.json not found"
-        )
-
+        _log.info("nuclei_results.json not found – skipping Telegram alerts")
         return
 
-    with open(json_file, "r") as f:
+    bot_token, chat_id = _get_telegram_credentials()
+    if not bot_token or not chat_id:
+        _log.info("Telegram credentials not configured – skipping alerts")
+        return
 
-        for line in f:
+    # Parse all findings
+    findings: List[dict] = []
+    try:
+        with open(json_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    findings.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError as exc:
+        _log.error(f"Failed to read nuclei results: {exc}")
+        return
 
-            line = line.strip()
+    if not findings:
+        _log.info("No vulnerability findings to alert")
+        return
 
-            if not line:
-                continue
+    # Build batches
+    batches = []
+    for i in range(0, len(findings), _BATCH_SIZE):
+        batch = findings[i:i + _BATCH_SIZE]
+        header = (
+            f"\U0001f6a8 VULNERABILITY ALERT "
+            f"({i + 1}-{min(i + _BATCH_SIZE, len(findings))}/{len(findings)}) "
+            f"\U0001f6a8\n"
+        )
+        body = "\n---\n".join(_format_vuln(v) for v in batch)
+        batches.append(header + body)
 
-            try:
+    _log.info(f"Sending {len(batches)} Telegram alert batch(es) for {len(findings)} findings")
 
-                vuln_info = json.loads(line)
+    for idx, message in enumerate(batches):
+        if _send_message(bot_token, chat_id, message):
+            _log.info(f"  Batch {idx + 1}/{len(batches)} sent")
+        if idx < len(batches) - 1:
+            time.sleep(_INTER_BATCH_DELAY)
 
-                ip = vuln_info.get(
-                    "ip",
-                    "unknown"
-                )
-
-                target = vuln_info.get(
-                    "host",
-                    ip
-                )
-
-                send_telegram_alert(
-                    target,
-                    ip,
-                    vuln_info
-                )
-
-            except Exception as e:
-
-                log(
-                    f"Telegram parse error: {e}"
-                )
+    _log.success(f"Telegram alerts complete: {len(findings)} findings in {len(batches)} message(s)")

@@ -1,1089 +1,637 @@
+"""
+Real-IP discovery module for RA137.
+
+Consumes CDN analysis output to prioritise CDN-protected subdomains,
+then attempts origin-IP discovery using multiple fingerprinting
+techniques (favicon hash, JARM, SSL certificates, vhost probing,
+body similarity, CNAME chains, DNS history).
+
+Supports Shodan, FOFA, Censys, and SecurityTrails APIs.
+
+Outputs
+-------
+* ``outputs/realip/realip_results.json`` – structured results
+* ``realip.txt`` (per-target) – legacy JSON-lines format
+"""
+
 import base64
 import difflib
 import ipaddress
 import json
-import os
-import mmh3
 import random
 import re
-import requests
 import socket
 import ssl
 import time
-import jarm
-
-from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from cryptography.x509.oid import NameOID
+from pathlib import Path
+from typing import Dict, List, Optional, Set
 from urllib.parse import urljoin
+
+import mmh3
+from bs4 import BeautifulSoup
+
+try:
+    import jarm
+except ImportError:
+    jarm = None  # type: ignore[assignment]
 
 try:
     import dns.resolver
 except ImportError:
-    dns = None
+    dns = None  # type: ignore[assignment]
 
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509.oid import NameOID
+
+from utils.config import get_config
+from utils.logger import Logger, get_logger
+from utils.http_session import get_session, get_insecure_session, api_cache
+from utils.ip_utils import is_valid_ip
 from utils.ai_report import generate_ai_report
-from utils.logger import log
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-requests.packages.urllib3.disable_warnings()
-
-
-CDN_FILE = "wordlists/all_cdn.txt"
-
-IP_REGEX = r"(?:\d{1,3}\.){3}\d{1,3}"
-
-REQUEST_DELAY = (1, 3)
-
-SSL_PORTS = [
-    443,
-    4443,
-    7443,
-    8443,
-    9443,
-    10443
-]
-
+SSL_PORTS = [443, 4443, 7443, 8443, 9443, 10443]
 
 COMMON_SHARED_CERTS = [
-    "cloudflare",
-    "akamai",
-    "fastly",
-    "imperva",
-    "amazon",
-    "amazonaws",
-    "edgekey",
-    "cdn"
+    "cloudflare", "akamai", "fastly", "imperva",
+    "amazon", "amazonaws", "edgekey", "cdn",
 ]
-
 
 COMMON_SHARED_VHOSTS = [
-    "outlook",
-    "exchange",
-    "owa",
-    "autodiscover",
-    "cpanel",
-    "plesk",
-    "webmail"
+    "outlook", "exchange", "owa", "autodiscover",
+    "cpanel", "plesk", "webmail",
 ]
-
-
-SHODAN_API_KEY = os.getenv("SHODAN_API_KEY")
-FOFA_EMAIL = os.getenv("FOFA_EMAIL")
-FOFA_API_KEY = os.getenv("FOFA_API_KEY")
-CENSYS_API_ID = os.getenv("CENSYS_API_ID")
-CENSYS_API_SECRET = os.getenv("CENSYS_API_SECRET")
 
 MAX_RESULTS = 500
 
-SECURITYTRAILS_API_KEY = os.getenv("SECURITYTRAILS_API_KEY")
 
-session = requests.Session()
-session.verify = False
-session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-_api_cache = {}
+def _rate_limit(lo: float = 1.0, hi: float = 3.0) -> None:
+    time.sleep(random.uniform(lo, hi))
 
 
-def rate_limit():
+# ---------------------------------------------------------------------------
+# CDN helpers (consume check_cdn output)
+# ---------------------------------------------------------------------------
 
-    delay = random.uniform(
-        REQUEST_DELAY[0],
-        REQUEST_DELAY[1]
-    )
-
-    time.sleep(delay)
-
-
-def load_cdn_ranges():
-
-    cidrs = []
-
-    with open(CDN_FILE, "r") as f:
-
-        for line in f:
-
-            line = line.strip()
-
-            if not line:
-                continue
-
-            try:
-
-                cidrs.append(
-                    ipaddress.ip_network(line)
-                )
-
-            except Exception as e:
-                log(f"CDN range parse error: {e}")
-                continue
-
-    return cidrs
+def _load_cdn_analysis(output_dir: Path, logger: Logger) -> Dict:
+    """Load CDN analysis JSON produced by check_cdn module."""
+    cdn_json = Path(output_dir) / "cdn" / "cdn_analysis.json"
+    if cdn_json.exists():
+        try:
+            with open(cdn_json, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception as exc:
+            logger.warning(f"Failed to load CDN analysis: {exc}")
+    return {}
 
 
-def is_cdn_ip(ip, cidrs):
+def _get_protected_subdomains(
+    cdn_data: Dict,
+    all_subdomains: List[str],
+    pure_ips: Set[str],
+) -> Set[str]:
+    """
+    Return the set of subdomains whose IPs are behind CDN/cloud/hosting.
 
+    Simple heuristic: if *all* resolved IPs for the domain are in the
+    CDN set, the subdomain is considered "protected".
+    """
+    cdn_ip_set: Set[str] = set()
+    for category in ("cdn_ips", "cloud_ips", "hosting_ips"):
+        for entry in cdn_data.get(category, []):
+            cdn_ip_set.add(entry.get("ip", ""))
+
+    # We don't have a per-subdomain→IP mapping here, so just return
+    # all subdomains when *any* IP is CDN-protected (caller decides
+    # priority ordering).
+    if cdn_ip_set & pure_ips:
+        return set(all_subdomains)
+    return set()
+
+
+# ---------------------------------------------------------------------------
+# Fingerprinting helpers
+# ---------------------------------------------------------------------------
+
+def _get_favicon_hash(url: str) -> Optional[int]:
     try:
-
-        ip_obj = ipaddress.ip_address(ip)
-
-        for network in cidrs:
-
-            if ip_obj in network:
-                return True
-
-        return False
-
-    except Exception as e:
-        log(f"CDN IP check error: {e}")
-        return False
-
-
-def get_favicon_hash(url):
-
-    try:
-
-        rate_limit()
-
-        response = session.get(
-            url,
-            timeout=10
-        )
-
-        if response.status_code != 200:
+        sess = get_insecure_session()
+        _rate_limit()
+        resp = sess.get(url, timeout=10)
+        if resp.status_code != 200:
             return None
 
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
+        soup = BeautifulSoup(resp.text, "html.parser")
         favicon_url = None
-
-        favicon_tags = [
-            {"rel": "icon"},
-            {"rel": "shortcut icon"},
-            {"rel": "apple-touch-icon"},
-            {"rel": "apple-touch-icon-precomposed"},
-        ]
-
-        for tag_attrs in favicon_tags:
-
-            link_tag = soup.find(
-                "link",
-                rel=lambda x:
-                x and tag_attrs["rel"] in x.lower()
-                if x else False
-            )
-
-            if (
-                link_tag and
-                link_tag.get("href")
-            ):
-
-                favicon_url = (
-                    link_tag.get("href")
-                )
-
+        for tag_attrs in [{"rel": "icon"}, {"rel": "shortcut icon"},
+                          {"rel": "apple-touch-icon"}]:
+            tag = soup.find("link", rel=lambda x: x and tag_attrs["rel"] in x.lower() if x else False)
+            if tag and tag.get("href"):
+                favicon_url = tag["href"]
                 break
 
         if not favicon_url:
-
-            standard_paths = [
-                "/favicon.ico",
-                "/favicon.png",
-                "/apple-touch-icon.png",
-                "/apple-touch-icon-precomposed.png"
-            ]
-
-            for path in standard_paths:
-
-                test_url = urljoin(
-                    url,
-                    path
-                )
-
+            for path in ["/favicon.ico", "/favicon.png", "/apple-touch-icon.png"]:
+                test_url = urljoin(url, path)
                 try:
-
-                    rate_limit()
-
-                    test_response = session.head(
-                        test_url,
-                        timeout=5
-                    )
-
-                    if (
-                        test_response.status_code
-                        == 200
-                    ):
-
+                    _rate_limit()
+                    r = sess.head(test_url, timeout=5)
+                    if r.status_code == 200:
                         favicon_url = path
                         break
-
-                except Exception as e:
-                    log(f"Favicon probe error for {path}: {e}")
+                except Exception:
                     continue
 
         if not favicon_url:
             return None
 
-        full_favicon_url = urljoin(
-            url,
-            favicon_url
-        )
-
-        rate_limit()
-
-        favicon_response = session.get(
-            full_favicon_url,
-            timeout=10
-        )
-
-        if favicon_response.status_code != 200:
+        full_url = urljoin(url, favicon_url)
+        _rate_limit()
+        fr = sess.get(full_url, timeout=10)
+        if fr.status_code != 200:
             return None
 
-        favicon_base64 = base64.encodebytes(
-            favicon_response.content
-        )
-
-        favicon_hash = mmh3.hash(
-            favicon_base64
-        )
-
-        return favicon_hash
-
-    except Exception as e:
-
-        log(f"Favicon error: {e}")
-
+        return mmh3.hash(base64.encodebytes(fr.content))
+    except Exception:
         return None
 
 
-def get_ssl_domains(ip,
-                    port=443):
-
-    result = set()
-
+def _get_ssl_domains(ip: str, port: int = 443) -> Set[str]:
+    result: Set[str] = set()
     try:
-
-        context = ssl.SSLContext(
-            ssl.PROTOCOL_TLS_CLIENT
-        )
-
-        context.check_hostname = False
-
-        context.verify_mode = ssl.CERT_NONE
-
-        with socket.create_connection(
-            (ip, port),
-            timeout=5
-        ) as sock:
-
-            with context.wrap_socket(
-                sock,
-                server_hostname=None
-            ) as ssock:
-
-                der_cert = ssock.getpeercert(
-                    binary_form=True
-                )
-
-        cert = x509.load_der_x509_certificate(
-            der_cert,
-            default_backend()
-        )
-
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((ip, port), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=None) as ssock:
+                der = ssock.getpeercert(binary_form=True)
+        if not der:
+            return result
+        cert = x509.load_der_x509_certificate(der, default_backend())
         try:
-
-            cn = cert.subject.get_attributes_for_oid(
-                NameOID.COMMON_NAME
-            )[0].value
-
+            cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
             result.add(cn.lower())
-
-        except Exception as e:
-            log(f"SSL CN extraction error: {e}")
-
+        except Exception:
+            pass
         try:
-
-            san_ext = cert.extensions.get_extension_for_class(
-                x509.SubjectAlternativeName
-            )
-
-            sans = san_ext.value.get_values_for_type(
-                x509.DNSName
-            )
-
-            for san in sans:
-
-                result.add(
-                    san.lower()
-                )
-
-        except Exception as e:
-            log(f"SSL SAN extraction error: {e}")
-
-    except Exception as e:
-        log(f"SSL connection error for {ip}:{port}: {e}")
-
+            san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+            for s in san.value.get_values_for_type(x509.DNSName):
+                result.add(s.lower())
+        except Exception:
+            pass
+    except Exception:
+        pass
     return result
 
 
-def is_subdomain(sub, parent):
-
+def _is_subdomain(sub: str, parent: str) -> bool:
     sub = sub.lower().rstrip(".")
     parent = parent.lower().rstrip(".")
-
-    return (
-        sub == parent or
-        sub.endswith("." + parent)
-    )
+    return sub == parent or sub.endswith("." + parent)
 
 
-def check_certificate_match(
-        ip,
-        target):
-
+def _check_certificate_match(ip: str, target: str) -> bool:
     for port in SSL_PORTS:
-
-        domains = get_ssl_domains(
-            ip,
-            port
-        )
-
-        for domain in domains:
-
-            if is_subdomain(domain, target):
-
-                for item in COMMON_SHARED_CERTS:
-
-                    if item in domain:
-                        return False
-
-                return True
-
+        domains = _get_ssl_domains(ip, port)
+        for d in domains:
+            if _is_subdomain(d, target):
+                if not any(c in d for c in COMMON_SHARED_CERTS):
+                    return True
     return False
 
 
-def check_vhost_match(
-        ip,
-        target):
-
+def _check_vhost_match(ip: str, target: str) -> bool:
     try:
-
-        rate_limit()
-
-        response = session.get(
-            f"https://{ip}",
-            headers={
-                "Host": target
-            },
-            timeout=8
-        )
-
-        text = response.text.lower()
-
-        if (
-            target.lower()
-            in text
-        ):
-
-            for item in COMMON_SHARED_VHOSTS:
-
-                if item in text:
-                    return False
-
-            return True
-
-    except Exception as e:
-        log(f"VHost check error for {ip}: {e}")
-
-    return False
-
-
-def get_jarm(host):
-
-    hashes = set()
-
-    for port in SSL_PORTS:
-
-        try:
-
-            result = jarm.Scanner.scan(
-                host,
-                port
-            )
-
-            if result and result != "0" * 62:
-                hashes.add(result)
-
-        except Exception as e:
-
-            log(f"JARM error on {host}:{port}: {e}")
-
-    return list(hashes)
-
-
-def shodan_search(query):
-
-    cache_key = f"shodan:{query}"
-
-    if cache_key in _api_cache:
-        log(f"Cache hit: {cache_key}")
-        return _api_cache[cache_key]
-
-    results = set()
-
-    offset = 0
-
-    try:
-
-        while len(results) < MAX_RESULTS:
-
-            rate_limit()
-
-            url = (
-                f"https://api.shodan.io/shodan/host/search"
-                f"?key={SHODAN_API_KEY}"
-                f"&query={query}"
-                f"&offset={offset}"
-            )
-
-            response = session.get(
-                url,
-                timeout=20
-            )
-
-            data = response.json()
-
-            matches = data.get("matches", [])
-
-            if not matches:
-                break
-
-            for match in matches:
-
-                ip = match.get("ip_str")
-
-                if ip:
-                    results.add(ip)
-
-            total = data.get("total", len(matches))
-
-            offset += len(matches)
-
-            if offset >= total:
-                break
-
-    except Exception as e:
-
-        log(f"Shodan error: {e}")
-
-    _api_cache[cache_key] = results
-
-    return results
-
-
-def fofa_search(query):
-
-    cache_key = f"fofa:{query}"
-
-    if cache_key in _api_cache:
-        log(f"Cache hit: {cache_key}")
-        return _api_cache[cache_key]
-
-    results = set()
-
-    page = 1
-
-    try:
-
-        query_base64 = base64.b64encode(
-            query.encode()
-        ).decode()
-
-        while len(results) < MAX_RESULTS:
-
-            rate_limit()
-
-            url = (
-                f"https://fofa.info/api/v1/search/all"
-                f"?email={FOFA_EMAIL}"
-                f"&key={FOFA_API_KEY}"
-                f"&qbase64={query_base64}"
-                f"&page={page}"
-            )
-
-            response = session.get(
-                url,
-                timeout=20
-            )
-
-            data = response.json()
-
-            items = data.get("results", [])
-
-            if not items:
-                break
-
-            for item in items:
-
-                ip = item[0]
-
-                if re.match(IP_REGEX, ip):
-                    results.add(ip)
-
-            total = data.get("size", len(items))
-
-            if page * len(items) >= total:
-                break
-
-            page += 1
-
-    except Exception as e:
-
-        log(f"FOFA error: {e}")
-
-    _api_cache[cache_key] = results
-
-    return results
-
-
-def censys_search(query):
-
-    cache_key = f"censys:{query}"
-
-    if cache_key in _api_cache:
-        log(f"Cache hit: {cache_key}")
-        return _api_cache[cache_key]
-
-    results = set()
-
-    cursor = None
-
-    try:
-
-        while len(results) < MAX_RESULTS:
-
-            rate_limit()
-
-            url = (
-                "https://search.censys.io/api/v2/hosts/search"
-            )
-
-            payload = {
-                "q": query,
-                "per_page": 100
-            }
-
-            if cursor:
-                payload["cursor"] = cursor
-
-            response = session.post(
-                url,
-                auth=(
-                    CENSYS_API_ID,
-                    CENSYS_API_SECRET
-                ),
-                json=payload,
-                timeout=20
-            )
-
-            data = response.json()
-
-            result_data = data.get("result", {})
-
-            hits = result_data.get("hits", [])
-
-            if not hits:
-                break
-
-            for hit in hits:
-
-                ip = hit.get("ip")
-
-                if ip:
-                    results.add(ip)
-
-            cursor = result_data.get("links", {}).get("next")
-
-            if not cursor:
-                break
-
-    except Exception as e:
-
-        log(f"Censys error: {e}")
-
-    _api_cache[cache_key] = results
-
-    return results
-
-
-def build_queries(
-        favicon_hash,
-        jarm):
-
-    queries = []
-
-    if favicon_hash:
-
-        queries.append({
-            "type": "favicon",
-            "shodan": (
-                f"http.favicon.hash:{favicon_hash}"
-            ),
-            "fofa": (
-                f'icon_hash="{favicon_hash}"'
-            ),
-            "censys": (
-                "services.http.response."
-                f"favicons.mmh3_hash:{favicon_hash}"
-            )
-        })
-
-    jarm_hashes = jarm
-
-    if not isinstance(jarm_hashes, list):
-        jarm_hashes = [jarm_hashes] if jarm_hashes else []
-
-    for jarm_hash in jarm_hashes:
-
-        if not jarm_hash:
-            continue
-
-        queries.append({
-            "type": "jarm",
-            "shodan": (
-                f"ssl.jarm:{jarm_hash}"
-            ),
-            "fofa": None,
-            "censys": (
-                f"services.jarm.fingerprint:{jarm_hash}"
-            )
-        })
-
-    return queries
-
-
-def check_body_similarity(ip, target):
-
-    try:
-
-        rate_limit()
-
-        cdn_response = session.get(
-            f"https://{target}",
-            timeout=10,
-            allow_redirects=True
-        )
-
-        rate_limit()
-
-        ip_response = session.get(
+        _rate_limit()
+        resp = get_insecure_session().get(
             f"https://{ip}",
             headers={"Host": target},
-            timeout=10,
-            allow_redirects=True
+            timeout=8,
         )
+        text = resp.text.lower()
+        if target.lower() in text:
+            if not any(v in text for v in COMMON_SHARED_VHOSTS):
+                return True
+    except Exception:
+        pass
+    return False
 
-        if (
-            cdn_response.status_code != 200 or
-            ip_response.status_code != 200
-        ):
+
+def _check_body_similarity(ip: str, target: str) -> bool:
+    try:
+        sess = get_insecure_session()
+        _rate_limit()
+        r1 = sess.get(f"https://{target}", timeout=10, allow_redirects=True)
+        _rate_limit()
+        r2 = sess.get(f"https://{ip}", headers={"Host": target}, timeout=10, allow_redirects=True)
+        if r1.status_code != 200 or r2.status_code != 200:
             return False
-
-        cdn_text = cdn_response.text[:5000]
-        ip_text = ip_response.text[:5000]
-
-        ratio = difflib.SequenceMatcher(
-            None,
-            cdn_text,
-            ip_text
-        ).ratio()
-
-        log(f"Body similarity {ip} vs {target}: {ratio:.2f}")
-
+        ratio = difflib.SequenceMatcher(None, r1.text[:5000], r2.text[:5000]).ratio()
         return ratio >= 0.6
-
-    except Exception as e:
-
-        log(f"Body similarity error for {ip}: {e}")
-
+    except Exception:
         return False
 
 
-def get_cname_ips(domain):
-
-    results = set()
-
-    if dns is None:
-        log("dnspython not installed, skipping CNAME analysis")
-        return results
-
-    try:
-
+def _get_jarm(host: str) -> List[str]:
+    if jarm is None:
+        return []
+    hashes: Set[str] = set()
+    for port in SSL_PORTS:
         try:
-            answers = dns.resolver.resolve(domain, "CNAME")
-        except Exception as e:
-            log(f"CNAME resolve error for {domain}: {e}")
-            return results
-
-        for rdata in answers:
-
-            cname = str(rdata.target).rstrip(".")
-
-            log(f"CNAME chain: {domain} -> {cname}")
-
-            try:
-                a_answers = dns.resolver.resolve(cname, "A")
-
-                for a_record in a_answers:
-                    ip = str(a_record)
-                    results.add(ip)
-
-            except Exception as e:
-                log(f"CNAME A-record error for {cname}: {e}")
-
-    except Exception as e:
-        log(f"CNAME analysis error for {domain}: {e}")
-
-    return results
+            result = jarm.Scanner.scan(host, port)
+            if result and result != "0" * 62:
+                hashes.add(result)
+        except Exception:
+            pass
+    return list(hashes)
 
 
-def securitytrails_history(domain):
-
-    results = set()
-
-    if not SECURITYTRAILS_API_KEY:
+def _get_cname_ips(domain: str) -> Set[str]:
+    results: Set[str] = set()
+    if dns is None:
         return results
-
-    cache_key = f"securitytrails:{domain}"
-
-    if cache_key in _api_cache:
-        log(f"Cache hit: {cache_key}")
-        return _api_cache[cache_key]
-
     try:
-
-        rate_limit()
-
-        url = (
-            f"https://api.securitytrails.com/v1/history/{domain}/dns/a"
-        )
-
-        response = session.get(
-            url,
-            headers={
-                "APIKEY": SECURITYTRAILS_API_KEY,
-                "Accept": "application/json"
-            },
-            timeout=20
-        )
-
-        if response.status_code != 200:
-            log(f"SecurityTrails returned {response.status_code}")
-            return results
-
-        data = response.json()
-
-        for record in data.get("records", []):
-
-            for value in record.get("values", []):
-
-                ip = value.get("ip")
-
-                if ip:
-                    results.add(ip)
-
-    except Exception as e:
-        log(f"SecurityTrails error for {domain}: {e}")
-
-    _api_cache[cache_key] = results
-
+        answers = dns.resolver.resolve(domain, "CNAME")
+        for rdata in answers:
+            cname = str(rdata.target).rstrip(".")
+            try:
+                for a in dns.resolver.resolve(cname, "A"):
+                    results.add(str(a))
+            except Exception:
+                pass
+    except Exception:
+        pass
     return results
 
 
-def validate_real_ip(
-        ip,
-        target,
-        favicon_match=False,
-        cert_match=False,
-        vhost_match=False,
-        jarm_match=False,
-        body_match=False):
+# ---------------------------------------------------------------------------
+# API searches (Shodan, FOFA, Censys, SecurityTrails)
+# ---------------------------------------------------------------------------
 
+def _shodan_search(query: str, logger: Logger) -> Set[str]:
+    config = get_config()
+    key = config.api_keys.shodan_api_key
+    if not key:
+        return set()
+    cache_key = f"shodan:{query}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    results: Set[str] = set()
+    offset = 0
+    sess = get_session()
+    try:
+        while len(results) < MAX_RESULTS:
+            _rate_limit()
+            url = f"https://api.shodan.io/shodan/host/search?key={key}&query={query}&offset={offset}"
+            data = sess.get(url, timeout=20).json()
+            matches = data.get("matches", [])
+            if not matches:
+                break
+            for m in matches:
+                ip = m.get("ip_str")
+                if ip and is_valid_ip(ip):
+                    results.add(ip)
+            total = data.get("total", len(matches))
+            offset += len(matches)
+            if offset >= total:
+                break
+    except Exception as exc:
+        logger.error(f"Shodan error: {exc}")
+    api_cache.put(cache_key, results)
+    return results
+
+
+def _fofa_search(query: str, logger: Logger) -> Set[str]:
+    config = get_config()
+    email, key = config.api_keys.fofa_email, config.api_keys.fofa_api_key
+    if not email or not key:
+        return set()
+    cache_key = f"fofa:{query}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    results: Set[str] = set()
+    page = 1
+    sess = get_session()
+    try:
+        q64 = base64.b64encode(query.encode()).decode()
+        while len(results) < MAX_RESULTS:
+            _rate_limit()
+            url = f"https://fofa.info/api/v1/search/all?email={email}&key={key}&qbase64={q64}&page={page}&fields=ip"
+            data = sess.get(url, timeout=20).json()
+            items = data.get("results", [])
+            if not items:
+                break
+            for item in items:
+                # FOFA returns list or tuple; IP is first field when fields=ip
+                ip = item[0] if isinstance(item, (list, tuple)) and item else None
+                if ip and is_valid_ip(ip):
+                    results.add(ip)
+            total = data.get("size", len(items))
+            if page * len(items) >= total:
+                break
+            page += 1
+    except Exception as exc:
+        logger.error(f"FOFA error: {exc}")
+    api_cache.put(cache_key, results)
+    return results
+
+
+def _censys_search(query: str, logger: Logger) -> Set[str]:
+    config = get_config()
+    cid_, csec = config.api_keys.censys_api_id, config.api_keys.censys_api_secret
+    if not cid_ or not csec:
+        return set()
+    cache_key = f"censys:{query}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    results: Set[str] = set()
+    cursor = None
+    sess = get_session()
+    try:
+        while len(results) < MAX_RESULTS:
+            _rate_limit()
+            payload: dict = {"q": query, "per_page": 100}
+            if cursor:
+                payload["cursor"] = cursor
+            resp = sess.post(
+                "https://search.censys.io/api/v2/hosts/search",
+                auth=(cid_, csec),
+                json=payload,
+                timeout=20,
+            )
+            data = resp.json()
+            hits = data.get("result", {}).get("hits", [])
+            if not hits:
+                break
+            for h in hits:
+                ip = h.get("ip")
+                if ip and is_valid_ip(ip):
+                    results.add(ip)
+            cursor = data.get("result", {}).get("links", {}).get("next")
+            if not cursor:
+                break
+    except Exception as exc:
+        logger.error(f"Censys error: {exc}")
+    api_cache.put(cache_key, results)
+    return results
+
+
+def _securitytrails_history(domain: str, logger: Logger) -> Set[str]:
+    config = get_config()
+    key = config.api_keys.securitytrails_api_key
+    if not key:
+        return set()
+    cache_key = f"securitytrails:{domain}"
+    cached = api_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    results: Set[str] = set()
+    sess = get_session()
+    try:
+        _rate_limit()
+        url = f"https://api.securitytrails.com/v1/history/{domain}/dns/a"
+        resp = sess.get(url, headers={"APIKEY": key, "Accept": "application/json"}, timeout=20)
+        if resp.status_code == 200:
+            for rec in resp.json().get("records", []):
+                for val in rec.get("values", []):
+                    ip = val.get("ip")
+                    if ip and is_valid_ip(ip):
+                        results.add(ip)
+    except Exception as exc:
+        logger.error(f"SecurityTrails error: {exc}")
+    api_cache.put(cache_key, results)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Query builder
+# ---------------------------------------------------------------------------
+
+def _build_queries(favicon_hash: Optional[int], jarm_hashes: List[str]) -> List[dict]:
+    queries: List[dict] = []
+    if favicon_hash:
+        queries.append({
+            "type": "favicon",
+            "shodan": f"http.favicon.hash:{favicon_hash}",
+            "fofa": f'icon_hash="{favicon_hash}"',
+            "censys": f"services.http.response.favicons.mmh3_hash:{favicon_hash}",
+        })
+    for jh in jarm_hashes:
+        if jh:
+            queries.append({
+                "type": "jarm",
+                "shodan": f"ssl.jarm:{jh}",
+                "fofa": None,
+                "censys": f"services.jarm.fingerprint:{jh}",
+            })
+    return queries
+
+
+# ---------------------------------------------------------------------------
+# Validation / scoring
+# ---------------------------------------------------------------------------
+
+def _validate_real_ip(
+    ip: str,
+    target: str,
+    *,
+    favicon: bool = False,
+    cert: bool = False,
+    vhost: bool = False,
+    jarm_m: bool = False,
+    body: bool = False,
+) -> tuple:
     score = 0
-
-    if favicon_match:
+    if favicon:
         score += 1
-
-    if jarm_match:
+    if jarm_m:
         score += 2
-
-    if body_match:
+    if body:
         score += 3
-
-    if vhost_match:
+    if vhost:
         score += 4
-
-    if cert_match:
+    if cert:
         score += 5
+    # Accept if: any single strong signal (cert=5 or vhost=4),
+    # or combined score >= 4 (e.g. body(3)+favicon(1), jarm(2)+favicon(1)+body(3))
+    is_valid = cert or vhost or score >= 4
+    return is_valid, score
 
-    return score >= 7, score
 
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
-def save_results(results,
-                 output_file):
+def real_ip_discovery(
+    output_dir: Path,
+    logger: Optional[Logger] = None,
+    target: str = "",
+) -> List[dict]:
+    """
+    Attempt to discover origin IPs hidden behind CDN / reverse-proxy.
 
-    with open(output_file, "w") as f:
+    Parameters
+    ----------
+    output_dir : Path
+        Per-target output directory.
+    logger : Logger, optional
 
-        for item in results:
+    Returns
+    -------
+    list[dict]
+        Validated real-IP results.
+    """
+    if logger is None:
+        logger = get_logger("REALIP")
 
-            f.write(
-                json.dumps(item) + "\n"
-            )
+    config = get_config()
+    output_dir = Path(output_dir)
+    logger.info("Starting real IP discovery")
 
-    log(
-        f"Saved {len(results)} results"
+    # --- load CDN analysis -----------------------------------------------
+    cdn_data = _load_cdn_analysis(output_dir, logger)
+    cdn_protected_count = sum(
+        len(cdn_data.get(k, [])) for k in ("cdn_ips", "cloud_ips", "hosting_ips")
     )
+    logger.info(f"CDN-protected IPs from prior step: {cdn_protected_count}")
 
-
-def real_ip_discovery(output_dir):
-
-    log("Starting real IP discovery")
-
-    subdomain_file = (
-        output_dir / "subdomains.txt"
-    )
-
-    pure_ip_file = (
-        output_dir / "pure_ip.txt"
-    )
-
-    output_file = (
-        output_dir / "realip.txt"
-    )
-
-    cidrs = load_cdn_ranges()
-
-    if not pure_ip_file.exists():
-        return
-
-    cdn_ips = []
-
-    with open(pure_ip_file, "r") as f:
-
-        for line in f:
-
-            ip = line.strip()
-
-            if (
-                ip and
-                is_cdn_ip(ip, cidrs)
-            ):
-
-                cdn_ips.append(ip)
-
-    if not cdn_ips:
-        return
-
+    # --- load subdomains -------------------------------------------------
+    subdomain_file = output_dir / "subdomains.txt"
     if not subdomain_file.exists():
-        return
+        logger.warning("subdomains.txt not found – skipping")
+        return []
+    with open(subdomain_file, "r", encoding="utf-8") as fh:
+        subdomains = [ln.strip() for ln in fh if ln.strip()]
+    if not subdomains:
+        logger.warning("No subdomains loaded")
+        return []
 
-    subdomains = []
+    # --- load pure IPs for protected-subdomain detection -----------------
+    pure_ip_file = output_dir / "pure_ip.txt"
+    pure_ips: Set[str] = set()
+    if pure_ip_file.exists():
+        with open(pure_ip_file, "r", encoding="utf-8") as fh:
+            pure_ips = {ln.strip() for ln in fh if ln.strip()}
 
-    with open(subdomain_file, "r") as f:
+    protected = _get_protected_subdomains(cdn_data, subdomains, pure_ips)
+    # Prioritise: protected first, then the rest
+    ordered = sorted(protected) + sorted(set(subdomains) - protected)
+    logger.info(f"Processing {len(ordered)} subdomains ({len(protected)} CDN-prioritised)")
 
-        for line in f:
+    # --- process subdomains in parallel ----------------------------------
+    all_results: List[dict] = []
 
-            sub = line.strip()
-
-            if sub:
-                subdomains.append(sub)
-
-    all_results = []
-
-    def process_subdomain(target):
-
-        log(
-            f"Fingerprinting {target}"
-        )
-
+    def _process(target: str) -> List[dict]:
+        logger.info(f"Fingerprinting {target}")
         url = f"https://{target}"
+        favicon_hash = _get_favicon_hash(url)
+        jarm_hashes = _get_jarm(target)
+        queries = _build_queries(favicon_hash, jarm_hashes)
 
-        favicon_hash = get_favicon_hash(
-            url
-        )
+        favicon_ips: Set[str] = set()
+        jarm_ips: Set[str] = set()
+        matched_by: List[str] = []
 
-        jarm_hashes = get_jarm(
-            target
-        )
+        for q in queries:
+            qt = q["type"]
+            if q.get("shodan"):
+                r = _shodan_search(q["shodan"], logger)
+                if r:
+                    matched_by.append(f"shodan-{qt}")
+                    (favicon_ips if qt == "favicon" else jarm_ips).update(r)
+            if q.get("fofa"):
+                r = _fofa_search(q["fofa"], logger)
+                if r:
+                    matched_by.append(f"fofa-{qt}")
+                    (favicon_ips if qt == "favicon" else jarm_ips).update(r)
+            if q.get("censys"):
+                r = _censys_search(q["censys"], logger)
+                if r:
+                    matched_by.append(f"censys-{qt}")
+                    (favicon_ips if qt == "favicon" else jarm_ips).update(r)
 
-        queries = build_queries(
-            favicon_hash,
-            jarm_hashes
-        )
+        cname_ips = _get_cname_ips(target)
+        history_ips = _securitytrails_history(target, logger)
 
-        favicon_ips = set()
+        candidates = favicon_ips | jarm_ips | cname_ips | history_ips
+        target_results: List[dict] = []
 
-        jarm_ips = set()
-
-        matched_by = []
-
-        for query in queries:
-
-            query_type = query["type"]
-
-            if (
-                SHODAN_API_KEY and
-                query["shodan"]
-            ):
-
-                results = shodan_search(
-                    query["shodan"]
-                )
-
-                if results:
-
-                    matched_by.append(
-                        f"shodan-{query_type}"
-                    )
-
-                    if query_type == "favicon":
-                        favicon_ips.update(results)
-                    elif query_type == "jarm":
-                        jarm_ips.update(results)
-
-            if (
-                FOFA_EMAIL and
-                FOFA_API_KEY and
-                query["fofa"]
-            ):
-
-                results = fofa_search(
-                    query["fofa"]
-                )
-
-                if results:
-
-                    matched_by.append(
-                        f"fofa-{query_type}"
-                    )
-
-                    if query_type == "favicon":
-                        favicon_ips.update(results)
-                    elif query_type == "jarm":
-                        jarm_ips.update(results)
-
-            if (
-                CENSYS_API_ID and
-                CENSYS_API_SECRET and
-                query["censys"]
-            ):
-
-                results = censys_search(
-                    query["censys"]
-                )
-
-                if results:
-
-                    matched_by.append(
-                        f"censys-{query_type}"
-                    )
-
-                    if query_type == "favicon":
-                        favicon_ips.update(results)
-                    elif query_type == "jarm":
-                        jarm_ips.update(results)
-
-        # CNAME chain analysis
-        cname_ips = get_cname_ips(target)
-
-        # SecurityTrails DNS history
-        history_ips = securitytrails_history(target)
-
-        target_results = favicon_ips | jarm_ips | cname_ips | history_ips
-
-        target_results_list = []
-
-        for ip in target_results:
-
-            cert_match = check_certificate_match(
-                ip,
-                target
+        for ip in candidates:
+            cert_m = _check_certificate_match(ip, target)
+            vhost_m = _check_vhost_match(ip, target)
+            body_m = _check_body_similarity(ip, target)
+            valid, score = _validate_real_ip(
+                ip, target,
+                favicon=ip in favicon_ips,
+                cert=cert_m,
+                vhost=vhost_m,
+                jarm_m=ip in jarm_ips,
+                body=body_m,
             )
-
-            vhost_match = check_vhost_match(
-                ip,
-                target
-            )
-
-            body_match = check_body_similarity(
-                ip,
-                target
-            )
-
-            valid, score = validate_real_ip(
-                ip=ip,
-                target=target,
-                favicon_match=(ip in favicon_ips),
-                cert_match=cert_match,
-                vhost_match=vhost_match,
-                jarm_match=(ip in jarm_ips),
-                body_match=body_match
-            )
-
             if not valid:
                 continue
-
-            result = {
+            target_results.append({
                 "target": target,
                 "ip": ip,
                 "score": score,
-                "cert_match": cert_match,
-                "vhost_match": vhost_match,
-                "body_match": body_match,
-                "matched_by": matched_by
-            }
+                "cert_match": cert_m,
+                "vhost_match": vhost_m,
+                "body_match": body_m,
+                "matched_by": list(set(matched_by)),
+            })
+        return target_results
 
-            target_results_list.append(result)
-
-        return target_results_list
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-
-        futures = {
-            executor.submit(process_subdomain, sub): sub
-            for sub in subdomains
-        }
-
+    with ThreadPoolExecutor(max_workers=config.concurrency.cert_discovery_workers) as pool:
+        futures = {pool.submit(_process, sub): sub for sub in ordered}
         for future in as_completed(futures):
-
+            sub = futures[future]
             try:
+                all_results.extend(future.result())
+            except Exception as exc:
+                logger.error(f"Error processing {sub}: {exc}")
 
-                results = future.result()
-                all_results.extend(results)
+    # --- deduplicate by (target, ip) -------------------------------------
+    seen: Set[tuple] = set()
+    unique: List[dict] = []
+    for r in all_results:
+        key = (r["target"], r["ip"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
 
-            except Exception as e:
+    # --- save JSON output ----------------------------------------------
+    realip_dir = Path(output_dir) / "realip"
+    realip_dir.mkdir(parents=True, exist_ok=True)
+    json_file = realip_dir / "realip_results.json"
+    with open(json_file, "w", encoding="utf-8") as fh:
+        json.dump(unique, fh, indent=2)
 
-                sub = futures[future]
-                log(f"Error processing {sub}: {e}")
+    # Also save legacy realip.txt (JSON-lines) in target output dir
+    legacy_file = output_dir / "realip.txt"
+    with open(legacy_file, "w", encoding="utf-8") as fh:
+        for item in unique:
+            fh.write(json.dumps(item) + "\n")
 
-    save_results(
-        all_results,
-        output_file
-    )
+    logger.success(f"Real IP discovery: {len(unique)} unique results → {json_file}")
 
-    report_data = "\n".join([
-        json.dumps(x)
-        for x in all_results
-    ])
-
+    # --- AI report -------------------------------------------------------
+    report_lines = [
+        f"IP={r['ip']} score={r['score']} cert={r['cert_match']} "
+        f"vhost={r['vhost_match']} body={r['body_match']}"
+        for r in unique
+    ]
     generate_ai_report(
         module_name="Real IP Discovery",
-        data=report_data
+        data="\n".join(report_lines) if report_lines else "No real IPs discovered.",
+        target=target,
     )
 
-    log("Real IP discovery completed")
+    return unique
