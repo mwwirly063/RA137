@@ -1,0 +1,98 @@
+# RA137 Reconnaissance Framework - Dependencies
+# Includes MCP, LangChain, and AI integration packages
+
+# =============================================================================
+# Core Framework Dependencies
+# =============================================================================
+python-dotenv>=1.0.0
+requests>=2.31.0
+urllib3>=2.0.0
+
+# =============================================================================
+# Async & Concurrency
+# =============================================================================
+aiohttp>=3.9.0
+asyncio>=3.4.3
+
+# =============================================================================
+# Model Context Protocol (MCP)
+# =============================================================================
+mcp>=1.0.0
+
+# =============================================================================
+# LangChain & AI Agent Framework
+# =============================================================================
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-mcp-adapters>=0.1.0
+
+# =============================================================================
+# Optional: Alternative LLM Providers
+# =============================================================================
+# For Ollama local models
+langchain-ollama>=0.2.0
+
+# For Anthropic Claude (alternative to Qwen)
+# langchain-anthropic>=0.2.0
+
+# =============================================================================
+# Data Processing & Utilities
+# =============================================================================
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# JSON handling (already in stdlib, but enhanced features)
+orjson>=3.9.0
+
+# =============================================================================
+# Logging & Monitoring
+# =============================================================================
+colorama>=0.4.6
+rich>=13.7.0
+
+# =============================================================================
+# Security & Validation
+# =============================================================================
+# Domain/IP validation
+ipaddress>=1.0.23
+
+# =============================================================================
+# Development & Testing (Optional)
+# =============================================================================
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# ruff>=0.1.0
+# mypy>=1.7.0
+
+# =============================================================================
+# Notes:
+# 
+# To install all dependencies:
+#   pip install -r requirements.txt
+#
+# For minimal installation (core framework only):
+#   pip install python-dotenv requests aiohttp mcp
+#
+# For full AI agent capabilities:
+#   pip install -r requirements.txt
+#
+# Environment Variables Required:
+#   - For Qwen via OpenAI-compatible endpoint:
+#       OPENAI_API_KEY=your_key
+#       OPENAI_BASE_URL=https://your-qwen-endpoint/v1
+#   
+#   - For Ollama (local Qwen):
+#       LLM_PROVIDER=ollama
+#       LLM_MODEL=qwen-coder
+#       OLLAMA_HOST=http://localhost:11434/v1
+#
+#   - For external APIs (optional, used by recon modules):
+#       SHODAN_API_KEY=...
+#       FOFA_EMAIL=...
+#       FOFA_API_KEY=...
+#       CENSYS_API_ID=...
+#       CENSYS_API_SECRET=...
+#       SECURITYTRAILS_API_KEY=...
+# =============================================================================
