@@ -14,6 +14,8 @@ Execution flow:
    10. Vulnerability checking       (vuln_check)
 """
 
+from __future__ import annotations
+
 import json
 import os
 import signal
@@ -21,13 +23,13 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Any, Callable, Dict, List, Optional
 
-from utils.logger import Logger, get_logger, set_default_log_file
-from utils.database import init_db
-from utils.paths import create_target_output
-from utils.config import get_config
 from utils.ai_report import generate_pdf_report
+from utils.config import get_config
+from utils.database import init_db
+from utils.logger import Logger, get_logger, set_default_log_file
+from utils.paths import create_target_output
 from utils.validate import validate_domain
 
 from modules.subdomain_enum import collect_subdomains
@@ -45,7 +47,9 @@ from modules.vuln_check import nuclei_scan
 # ---------------------------------------------------------------------------
 # Execution steps – ordered
 # ---------------------------------------------------------------------------
-STEPS = [
+StepRunner = Callable[[str, Path, Logger], None]
+
+STEPS: List[str] = [
     "subdomain_enum",
     "ip_extractor",
     "check_cdn",
@@ -66,7 +70,7 @@ STEPS = [
 _shutdown_event = threading.Event()
 
 
-def _signal_handler(signum, frame):
+def _signal_handler(signum: int, frame) -> None:
     """Handle SIGINT/SIGTERM for graceful shutdown."""
     _shutdown_event.set()
     logger = get_logger("MAIN")
@@ -80,6 +84,7 @@ signal.signal(signal.SIGTERM, _signal_handler)
 # ---------------------------------------------------------------------------
 # JSON-based step state tracker
 # ---------------------------------------------------------------------------
+
 
 def _state_file_path() -> Path:
     """Return the path to the step-completion state file."""
@@ -103,7 +108,7 @@ def _load_state() -> Dict[str, Dict[str, str]]:
     return {}
 
 
-def _save_state(state: Dict) -> None:
+def _save_state(state: Dict[str, Any]) -> None:
     """Persist step-completion state to JSON file."""
     path = _state_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,7 +116,7 @@ def _save_state(state: Dict) -> None:
         json.dump(state, fh, indent=2)
 
 
-def _step_completed(state: Dict, target: str, step: str) -> bool:
+def _step_completed(state: Dict[str, Any], target: str, step: str) -> bool:
     """Check whether a step has been successfully completed for a target.
 
     Also validates that the target's output directory still exists.
@@ -132,7 +137,7 @@ def _step_completed(state: Dict, target: str, step: str) -> bool:
     return True
 
 
-def _mark_step(state: Dict, target: str, step: str, status: str) -> None:
+def _mark_step(state: Dict[str, Any], target: str, step: str, status: str) -> None:
     """Mark a step's status for a target ('done' or 'failed')."""
     if target not in state:
         state[target] = {}
@@ -144,7 +149,8 @@ def _mark_step(state: Dict, target: str, step: str, status: str) -> None:
 # Target loading
 # ---------------------------------------------------------------------------
 
-def load_targets(logger: Logger) -> list:
+
+def load_targets(logger: Logger) -> List[str]:
     """Load and validate targets from the configured targets file."""
     config = get_config()
     targets_file = config.paths.targets_file
@@ -157,7 +163,7 @@ def load_targets(logger: Logger) -> list:
         raw_targets = [line.strip() for line in fh if line.strip()]
 
     # Validate each target
-    valid_targets = []
+    valid_targets: List[str] = []
     for raw in raw_targets:
         domain = validate_domain(raw)
         if domain:
@@ -172,43 +178,59 @@ def load_targets(logger: Logger) -> list:
 # Per-step runners
 # ---------------------------------------------------------------------------
 
+
 def _run_subdomain_enum(target: str, target_output: Path, logger: Logger) -> None:
-    collect_subdomains(domain=target, wordlist_path="wordlists/subdomains.txt", output_dir=target_output, target=target)
+    """Run subdomain enumeration."""
+    collect_subdomains(
+        domain=target,
+        wordlist_path="wordlists/subdomains.txt",
+        output_dir=target_output,
+        target=target,
+    )
 
 
 def _run_ip_extractor(target: str, target_output: Path, logger: Logger) -> None:
+    """Run IP extraction."""
     collect_ips(output_dir=target_output, target=target)
 
 
 def _run_check_cdn(target: str, target_output: Path, logger: Logger) -> None:
+    """Run CDN detection."""
     filter_non_cdn_ips(output_dir=target_output, logger=logger, target=target)
 
 
 def _run_cert_discovery(target: str, target_output: Path, logger: Logger) -> None:
+    """Run certificate discovery."""
     cert_discovery(target=target, output_dir=target_output)
 
 
 def _run_realip_discovery(target: str, target_output: Path, logger: Logger) -> None:
+    """Run real IP discovery."""
     real_ip_discovery(output_dir=target_output, logger=logger, target=target)
 
 
 def _run_asn_recon(target: str, target_output: Path, logger: Logger) -> None:
+    """Run ASN reconnaissance."""
     asn_recon(output_dir=target_output, target=target, logger=logger)
 
 
 def _run_final_ip_builder(target: str, target_output: Path, logger: Logger) -> None:
+    """Run final IP aggregation."""
     build_final_ips(output_dir=target_output, logger=logger, target=target)
 
 
 def _run_tech_detection(target: str, target_output: Path, logger: Logger) -> None:
+    """Run technology detection."""
     tech_detection(output_dir=target_output, logger=logger, target=target)
 
 
 def _run_network_discovery(target: str, target_output: Path, logger: Logger) -> None:
+    """Run network discovery."""
     network_discovery(output_dir=target_output, logger=logger, target=target)
 
 
 def _run_vuln_check(target: str, target_output: Path, logger: Logger) -> None:
+    """Run vulnerability scanning."""
     nuclei_scan(output_dir=target_output, logger=logger, target=target)
 
 
@@ -216,17 +238,17 @@ def _run_vuln_check(target: str, target_output: Path, logger: Logger) -> None:
 # Step dispatcher
 # ---------------------------------------------------------------------------
 
-_STEP_RUNNERS = {
-    "subdomain_enum":    _run_subdomain_enum,
-    "ip_extractor":      _run_ip_extractor,
-    "check_cdn":         _run_check_cdn,
-    "cert_discovery":    _run_cert_discovery,
-    "realip_discovery":  _run_realip_discovery,
-    "asn_recon":         _run_asn_recon,
-    "final_ip_builder":  _run_final_ip_builder,
-    "tech_detection":    _run_tech_detection,
+_STEP_RUNNERS: Dict[str, StepRunner] = {
+    "subdomain_enum": _run_subdomain_enum,
+    "ip_extractor": _run_ip_extractor,
+    "check_cdn": _run_check_cdn,
+    "cert_discovery": _run_cert_discovery,
+    "realip_discovery": _run_realip_discovery,
+    "asn_recon": _run_asn_recon,
+    "final_ip_builder": _run_final_ip_builder,
+    "tech_detection": _run_tech_detection,
     "network_discovery": _run_network_discovery,
-    "vuln_check":        _run_vuln_check,
+    "vuln_check": _run_vuln_check,
 }
 
 
@@ -235,10 +257,9 @@ def _execute_step(
     target: str,
     target_output: Path,
     logger: Logger,
-    state: Dict,
+    state: Dict[str, Any],
 ) -> bool:
-    """
-    Execute a single step with error handling and completion tracking.
+    """Execute a single step with error handling and completion tracking.
 
     Returns ``True`` if the step succeeded, ``False`` otherwise.
     Only marks the step as "done" on success.
@@ -252,9 +273,9 @@ def _execute_step(
         logger.error(f"Unknown step: {step}")
         return False
 
-    logger.info(f"{'=' * 60}")
+    logger.info("=" * 60)
     logger.info(f"Running step: {step}")
-    logger.info(f"{'=' * 60}")
+    logger.info("=" * 60)
 
     try:
         runner(target, target_output, logger)
@@ -276,14 +297,16 @@ def _process_target(
     idx: int,
     target: str,
     total: int,
-    config,
-    state: Dict,
+    config: Any,
+    state: Dict[str, Any],
     state_lock: threading.Lock,
 ) -> bool:
     """Process a single target through the full pipeline.
 
     Thread-safe: uses a lock for state mutations and per-target log files.
     """
+    from utils.config import Config
+    
     target_output = create_target_output(target, config.paths.output_base)
 
     # Create per-target log file and switch the global default
@@ -296,9 +319,9 @@ def _process_target(
     # Also set the global default for modules that create loggers internally
     set_default_log_file(target_log_file)
 
-    target_logger.info(f"\n{'#' * 60}")
-    target_logger.info(f"Target {idx}/{total}: {target}")
-    target_logger.info(f"{'#' * 60}")
+    target_logger.info("\n%s", "#" * 60)
+    target_logger.info("Target %d/%d: %s", idx, total, target)
+    target_logger.info("%s", "#" * 60)
 
     for step in STEPS:
         if _shutdown_event.is_set():
@@ -317,9 +340,9 @@ def _process_target(
             target_logger.error(f"Unknown step: {step}")
             continue
 
-        target_logger.info(f"{'=' * 60}")
+        target_logger.info("=" * 60)
         target_logger.info(f"Running step: {step}")
-        target_logger.info(f"{'=' * 60}")
+        target_logger.info("=" * 60)
 
         try:
             runner(target, target_output, target_logger)
